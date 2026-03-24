@@ -132,38 +132,8 @@
 
     <link rel="stylesheet" href="styles_V2.9.css">
     <style>
-        #landscape-prompt {
-            display: none;
-            position: fixed;
-            inset: 0;
-            z-index: 9999;
-            background: #17171a;
-            color: white;
-            padding: 2rem;
-            text-align: center;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        /* Orientation CSS removed so JS has full control */
-
-        html.is-ios #fs-btn-prompt,
-        html.is-ios #fs-btn-ios,
         html.is-ios button[onclick="actions.toggleFullscreen()"] {
             display: none !important;
-        }
-
-        .ios-only {
-            display: none;
-        }
-
-        html.is-ios .ios-only {
-            display: block;
-        }
-
-        html.is-ios .not-ios {
-            display: none;
         }
 
         #loading-screen {
@@ -242,83 +212,11 @@
         </div>
     </div>
 
-    <!-- Mobile Portrait Overlay -->
-    <div id="landscape-prompt" class="animate-fade-in">
-        <div class="bg-brand-blue/10 p-6 rounded-3xl border border-brand-blue/30 mb-8 animate-bounce-slow">
-            <i data-lucide="smartphone" class="text-brand-blue w-16 h-16"></i>
-        </div>
-        <h2 class="text-3xl font-black mb-4">Experiencia Móvil</h2>
-        <p class="text-zinc-400 text-lg mb-8 max-w-xs mx-auto">
-            Bienvenido a Valori+. Por favor, inicia la experiencia para continuar.
-        </p>
-        <button onclick="requestFullScreen()" id="fs-btn-prompt"
-            class="bg-brand-blue hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-2 mb-4">
-            <i data-lucide="maximize" width="20"></i> Iniciar Pantalla Completa
-        </button>
-        <button onclick="dismissOrientationPrompt()" id="fs-btn-ios" style="display: none;"
-            class="bg-brand-blue hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-2 mb-4">
-            <i data-lucide="play" width="20"></i> Iniciar Experiencia
-        </button>
-        <!-- Botón de paisaje eliminado ya que permitimos vertical en iOS -->
-    </div>
+    <!-- Mobile Portrait Overlay (removed) -->
+    <div id="landscape-prompt" style="display:none !important"></div>
 
     <script>
-        let isExperienceStarted = false;
-
-        function dismissOrientationPrompt() {
-            isExperienceStarted = true;
-            const overlay = document.getElementById('landscape-prompt');
-            if (overlay) overlay.style.display = 'none';
-        }
-
-        function confirmLandscape() {
-            checkMobileOrientation();
-        }
-
-        function checkMobileOrientation() {
-            const isMobile = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent);
-            const overlay = document.getElementById('landscape-prompt');
-
-            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' &&
-                navigator.maxTouchPoints > 1);
-            if (isIOS) {
-                document.documentElement.classList.add('is-ios');
-                const btnPrompt = document.getElementById('fs-btn-prompt');
-                const btnIos = document.getElementById('fs-btn-ios');
-                if (btnPrompt) btnPrompt.style.display = 'none';
-                if (btnIos) btnIos.style.display = 'flex';
-            }
-
-            // On mobile, show welcome prompt only on first visit (not fullscreen gating)
-            if (isMobile && !isExperienceStarted) {
-                if (overlay) overlay.style.display = 'flex';
-            } else {
-                if (overlay) overlay.style.display = 'none';
-            }
-        }
-
-        function requestFullScreen() {
-            const doc = window.document;
-            const docEl = doc.documentElement;
-            const requestFullScreen = docEl.requestFullscreen || docEl.mozRequestFullScreen || docEl.webkitRequestFullScreen ||
-                docEl.msRequestFullscreen;
-            if (requestFullScreen) {
-                requestFullScreen.call(docEl).catch(err => {
-                    console.log("Full screen request rejected", err);
-                });
-            }
-            dismissOrientationPrompt(); // Close prompt after attempting fullscreen
-        }
-
-        window.addEventListener('resize', checkMobileOrientation);
-        window.addEventListener('orientationchange', checkMobileOrientation);
-        document.addEventListener('fullscreenchange', checkMobileOrientation);
-        document.addEventListener('webkitfullscreenchange', checkMobileOrientation);
-        document.addEventListener('mozfullscreenchange', checkMobileOrientation);
-        document.addEventListener('MSFullscreenChange', checkMobileOrientation);
-
         document.addEventListener('DOMContentLoaded', () => {
-            checkMobileOrientation();
             if (window.lucide) window.lucide.createIcons();
         });
     </script>
