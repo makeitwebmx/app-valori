@@ -1,0 +1,1868 @@
+import { state, updateUI } from '../store.js';
+import { formatCurrency } from './Utils.js';
+import { calculateProjectionResult, calculateProjectionInterest } from './ProjectionHelpers.js';
+import { portfolioService } from '../services/PortfolioService.js';
+
+window.actions = window.actions || {};
+
+const isPortfolioReadOnly = () => state.coacheeViewMode === 'readonly';
+const getPortfolioTargetUserId = () => state.impersonatedUserId || null;
+const notifyPortfolioReadOnly = () => {
+    if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
+        window.showToast('Vista solo lectura para coachees.', 'warning');
+    }
+};
+const blockPortfolioEdit = () => {
+    if (!isPortfolioReadOnly()) return false;
+    notifyPortfolioReadOnly();
+    return true;
+};
+
+const defaultInvestmentFilters = () => ({
+    date: '',
+    objective: '',
+    classification: '',
+    tool: '',
+    period: '',
+    rateMin: '',
+    rateMax: '',
+    amountMin: '',
+    amountMax: '',
+    expiry: '',
+    status: ''
+});
+
+const normalizeText = (value) => (value ?? '').toString().trim().toLowerCase();
+const distributionKeys = ['fixed', 'alternative', 'liquid', 'variable'];
+
+const recalculateDistributionPercentages = (dist) => {
+    if (!dist) return;
+
+    const total = distributionKeys.reduce((sum, key) => sum + (parseFloat(dist[key]?.amount) || 0), 0);
+    if (total <= 0) {
+        distributionKeys.forEach((key) => {
+            if (dist[key]) dist[key].percent = 0;
+        });
+        return;
+    }
+
+    const rounded = {};
+    distributionKeys.forEach((key) => {
+        const amount = parseFloat(dist[key]?.amount) || 0;
+        rounded[key] = amount > 0 ? parseFloat(((amount / total) * 100).toFixed(1)) : 0;
+    });
+
+    const roundedSum = distributionKeys.reduce((sum, key) => sum + (rounded[key] || 0), 0);
+    const delta = parseFloat((100 - roundedSum).toFixed(1));
+    if (delta !== 0) {
+        const adjustKey = distributionKeys
+            .filter((key) => (parseFloat(dist[key]?.amount) || 0) > 0)
+            .sort((a, b) => (parseFloat(dist[b]?.amount) || 0) - (parseFloat(dist[a]?.amount) || 0))[0];
+
+        if (adjustKey) {
+            rounded[adjustKey] = parseFloat((rounded[adjustKey] + delta).toFixed(1));
+        }
+    }
+
+    distributionKeys.forEach((key) => {
+        if (dist[key]) dist[key].percent = rounded[key] || 0;
+    });
+};
+
+const applyInvestmentFilters = (investments, filters) => {
+    const f = filters || defaultInvestmentFilters();
+    const dateFilter = (f.date || '').trim();
+    const expiryFilter = (f.expiry || '').trim();
+    const classificationFilter = normalizeText(f.classification);
+    const statusFilter = normalizeText(f.status);
+    const objectiveFilter = normalizeText(f.objective);
+    const toolFilter = normalizeText(f.tool);
+    const periodFilter = normalizeText(f.period);
+
+    const toNumber = (value) => {
+        const num = parseFloat(value);
+        return Number.isFinite(num) ? num : null;
+    };
+
+    const rateMin = toNumber(f.rateMin);
+    const rateMax = toNumber(f.rateMax);
+    const amountMin = toNumber(f.amountMin);
+    const amountMax = toNumber(f.amountMax);
+
+    return (investments || []).filter((inv) => {
+        if (dateFilter && (inv.date || '') !== dateFilter) return false;
+        if (expiryFilter && (inv.expiry || '') !== expiryFilter) return false;
+        if (classificationFilter && normalizeText(inv.classification) !== classificationFilter) return false;
+        if (statusFilter && normalizeText(inv.status) !== statusFilter) return false;
+        if (objectiveFilter && !normalizeText(inv.objective).includes(objectiveFilter)) return false;
+        if (toolFilter && !normalizeText(inv.tool).includes(toolFilter)) return false;
+        if (periodFilter && !normalizeText(inv.period).includes(periodFilter)) return false;
+
+        const rateValue = toNumber(inv.rate) ?? 0;
+        if (rateMin !== null && rateValue < rateMin) return false;
+        if (rateMax !== null && rateValue > rateMax) return false;
+
+        const amountValue = toNumber(inv.amount) ?? 0;
+        if (amountMin !== null && amountValue < amountMin) return false;
+        if (amountMax !== null && amountValue > amountMax) return false;
+
+        return true;
+    });
+};
+
+const isActiveInvestment = (investment) => normalizeText(investment?.status) === 'activo';
+
+const recalculateRealDistributionFromActiveInvestments = () => {
+    const dist = state.portfolio.investment.realDistribution;
+    const investments = (state.portfolio.investment.executedInvestments || []).filter(isActiveInvestment);
+
+    dist.fixed.amount = 0;
+    dist.alternative.amount = 0;
+    dist.liquid.amount = 0;
+    dist.variable.amount = 0;
+
+    investments.forEach((inv) => {
+        const amount = parseFloat(inv.amount) || 0;
+        const classification = normalizeText(inv.classification);
+        if (classification === 'renta fija') dist.fixed.amount += amount;
+        if (classification === 'alternativo') dist.alternative.amount += amount;
+        if (classification === 'liquido') dist.liquid.amount += amount;
+        if (classification === 'renta variable') dist.variable.amount += amount;
+    });
+
+    recalculateDistributionPercentages(dist);
+};
+
+const resetPortfolioData = () => {
+    state.portfolio.liquid = 0;
+    state.portfolio.others = [];
+    state.portfolio.expenses2026 = [];
+    state.portfolio.expenses2027 = [];
+    state.portfolio.savingsPlan = { goals: [], monthlyData: [] };
+    state.portfolio.investment = {
+        amount: 0,
+        type: 'ARRIESGADO',
+        distribution: {
+            fixed: { percent: 0, amount: 0 },
+            alternative: { percent: 0, amount: 0 },
+            liquid: { percent: 0, amount: 0 },
+            variable: { percent: 0, amount: 0 }
+        },
+        projections: [],
+        objectives: [{ name: '', amount: 0, time: '', risk: '' }, { name: '', amount: 0, time: '', risk: '' }, { name: '', amount: 0, time: '', risk: '' }, { name: '', amount: 0, time: '', risk: '' }, { name: '', amount: 0, time: '', risk: '' }],
+        realDistribution: {
+            fixed: { percent: 0, amount: 0 },
+            alternative: { percent: 0, amount: 0 },
+            liquid: { percent: 0, amount: 0 },
+            variable: { percent: 0, amount: 0 }
+        },
+        executedInvestments: [],
+        expandedProjections: []
+    };
+    state.portfolio.investmentFilters = defaultInvestmentFilters();
+    state.portfolio.investmentFilterDraft = defaultInvestmentFilters();
+    state.portfolio.editingInvestmentId = null;
+    state.portfolio.isEditInvestmentModalOpen = false;
+};
+
+window.actions.resetPortfolioState = (options = {}) => {
+    resetPortfolioData();
+    state.portfolio.currentView = 'investment';
+    state.portfolio.hasAnimated = false;
+    state.portfolio.isInvestmentModalOpen = false;
+    state.portfolio.isLoading = false;
+    state.portfolio.isLoaded = false;
+    state.portfolio.loadedUserId = null;
+    state.portfolio.deleteConfirmation = { isOpen: false, index: null };
+    if (options.updateUI !== false) updateUI();
+};
+
+window.actions.loadPortfolio = async () => {
+    const desiredUserId = getPortfolioTargetUserId()
+        || state.user?.id
+        || state.user?.user_id
+        || null;
+
+    if (state.portfolio.isLoading) return;
+    if (state.portfolio.isLoaded && state.portfolio.loadedUserId === desiredUserId) return;
+
+    state.portfolio.isLoading = true;
+    // updateUI(); // Optional: show loading state
+
+    const data = await portfolioService.getPortfolio(desiredUserId);
+    if (data) {
+        // Merge fetched data, preserving UI state like 'currentView' if needed, 
+        // but 'data' from service is structured to match state.portfolio mostly.
+        // We need to be careful not to overwrite UI flags if they are not in DB.
+        // The service returns the data structure matching state.portfolio's data fields.
+        Object.assign(state.portfolio, data);
+        // Ensure objectives always has at least 5 rows
+        if (!state.portfolio.investment.objectives || state.portfolio.investment.objectives.length === 0) {
+            state.portfolio.investment.objectives = [
+                { name: '', amount: 0, time: '', risk: '' },
+                { name: '', amount: 0, time: '', risk: '' },
+                { name: '', amount: 0, time: '', risk: '' },
+                { name: '', amount: 0, time: '', risk: '' },
+                { name: '', amount: 0, time: '', risk: '' }
+            ];
+        }
+        state.portfolio.investmentFilters = {
+            ...defaultInvestmentFilters(),
+            ...(state.portfolio.investmentFilters || {})
+        };
+        state.portfolio.investmentFilterDraft = {
+            ...defaultInvestmentFilters(),
+            ...(state.portfolio.investmentFilterDraft || state.portfolio.investmentFilters || {})
+        };
+        recalculateRealDistributionFromActiveInvestments();
+    } else {
+        resetPortfolioData();
+    }
+    state.portfolio.editingInvestmentId = null;
+    state.portfolio.isEditInvestmentModalOpen = false;
+    state.portfolio.isLoaded = true;
+    state.portfolio.isLoading = false;
+    state.portfolio.loadedUserId = desiredUserId;
+    updateUI();
+};
+
+window.actions.savePortfolio = async () => {
+    if (isPortfolioReadOnly()) return;
+    if (!state.portfolio.isLoaded) return;
+    // Debounce could be added here
+    const desiredUserId = getPortfolioTargetUserId()
+        || state.user?.id
+        || state.user?.user_id
+        || null;
+    await portfolioService.savePortfolio(state.portfolio, desiredUserId);
+};
+
+window.actions.updatePortfolioOther = (index, value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.others[index].value = parseFloat(value) || 0;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updatePortfolioExpense = (yearKey, index, value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio[yearKey][index].value = parseFloat(value) || 0;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updatePortfolioGoalAmount = (index, value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.savingsPlan.goals[index].amount = parseFloat(value) || 0;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updatePortfolioGoalMonths = (index, value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.savingsPlan.goals[index].months = parseFloat(value) || 0;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updatePortfolioMonthData = (monthIndex, goalIndex, value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.savingsPlan.monthlyData[monthIndex][goalIndex] = parseFloat(value) || 0;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.setPortfolioView = (viewName) => {
+    console.log('setPortfolioView called with:', viewName);
+    console.log('Current state.view:', state.view);
+    state.portfolio.currentView = viewName;
+    console.log('Updated state.portfolio.currentView to:', state.portfolio.currentView);
+    updateUI();
+};
+
+window.actions.updateInvestmentAmount = (value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.investment.amount = parseFloat(value) || 0;
+    // Recalculate distribution based on percentages
+    const amount = state.portfolio.investment.amount;
+    const dist = state.portfolio.investment.distribution;
+    dist.fixed.amount = amount * (dist.fixed.percent / 100);
+    dist.alternative.amount = amount * (dist.alternative.percent / 100);
+    dist.liquid.amount = amount * (dist.liquid.percent / 100);
+    dist.variable.amount = amount * (dist.variable.percent / 100);
+    console.log('Updated investment amount:', amount, dist);
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updateInvestmentType = (value) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.investment.type = value;
+    const dist = state.portfolio.investment.distribution;
+
+    // Define profiles
+    let profiles = {
+        'CONSERVADOR': { fixed: 50, alternative: 10, liquid: 20, variable: 20 },
+        'MODERADO': { fixed: 40, alternative: 20, liquid: 10, variable: 30 },
+        'ARRIESGADO': { fixed: 25, alternative: 40, liquid: 5, variable: 30 } // Default match
+    };
+
+    const p = profiles[value] || profiles['ARRIESGADO'];
+
+    dist.fixed.percent = p.fixed;
+    dist.alternative.percent = p.alternative;
+    dist.liquid.percent = p.liquid;
+    dist.variable.percent = p.variable;
+
+    // Trigger amount recalculation
+    console.log('Updated investment type:', value);
+    window.actions.updateInvestmentAmount(state.portfolio.investment.amount);
+    // savePortfolio is called inside updateInvestmentAmount
+};
+
+window.actions.toggleProjectionExpand = (id) => {
+    // Read-only check removed to allow viewing
+    const expanded = state.portfolio.investment.expandedProjections || [];
+    const index = expanded.indexOf(id);
+    if (index === -1) {
+        expanded.push(id);
+    } else {
+        expanded.splice(index, 1);
+    }
+    state.portfolio.investment.expandedProjections = expanded;
+    state.portfolio.investment.expandedProjections = expanded;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.addProjection = () => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.investment.projections.push({
+        id: Date.now(), // simple unique id
+        initial: 10000,
+        monthly: 500,
+        days: 365,
+        rate: 10,
+        variance: 17,
+        freq: 'ANUAL'
+    });
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.removeProjection = (index) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.investment.projections.splice(index, 1);
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updateProjection = (index, field, value) => {
+    if (blockPortfolioEdit()) return;
+    const proj = state.portfolio.investment.projections[index];
+    if (field === 'freq' || field === 'rate' || field === 'variance') {
+        proj[field] = (field === 'rate' || field === 'variance') ? parseFloat(value) : value;
+    } else if (field === 'days') {
+        // Enforce integer years for calculation (years * 365)
+        // Value comes in as days, but input is years.
+        // Actually the input onchange passes "Math.round(this.value * 365)".
+        // We should ensure the stored days correspond to integer years if possible,
+        // or just rely on the input step="1" and math.round.
+        proj[field] = parseFloat(value) || 0;
+    } else {
+        proj[field] = parseFloat(value) || 0;
+    }
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.showProjectionChart = (index) => {
+    state.portfolio.activeChartProjectionIndex = index;
+    updateUI();
+    // Defer chart rendering to allow DOM update
+    setTimeout(() => {
+        const ctx = document.getElementById('projectionChart');
+        if (ctx) {
+            const proj = state.portfolio.investment.projections[index];
+            const years = Math.round(proj.days / 365);
+            const labels = Array.from({ length: years + 1 }, (_, i) => `Año ${i}`);
+
+            const calcData = (rate) => {
+                return labels.map((_, year) => {
+                    const r = rate / 100;
+                    const monthlyContrib = proj.monthly;
+                    const initial = proj.initial;
+
+                    if (proj.freq === 'ANUAL') {
+                        // Simple interest formula (Legacy Behavior favored by User)
+                        // Initial + (Monthly * 12 * Year) + (Initial * Rate * Year)
+                        return initial + (monthlyContrib * 12 * year) + (initial * r * year);
+                    } else {
+                        // Compound Interest Formula
+                        let n = 1; // Frequency per year
+                        if (proj.freq === 'SEMESTRAL') n = 2;
+                        if (proj.freq === 'TRIMESTRAL') n = 4;
+                        if (proj.freq === 'MENSUAL') n = 12;
+                        if (proj.freq === 'DIARIO') n = 365;
+
+                        const ratePerPeriod = r / n;
+                        const periods = n * year;
+                        const contribPerPeriod = (monthlyContrib * 12) / n;
+
+                        // Calculate Future Value of Initial Amount
+                        const fvInitial = initial * Math.pow(1 + ratePerPeriod, periods);
+
+                        // Calculate Future Value of Monthly Contributions (Ordinary Annuity)
+                        let fvContribs = 0;
+                        if (Math.abs(ratePerPeriod) > 0.00000001) {
+                            fvContribs = contribPerPeriod * (Math.pow(1 + ratePerPeriod, periods) - 1) / ratePerPeriod;
+                        } else {
+                            fvContribs = contribPerPeriod * periods;
+                        }
+
+                        return fvInitial + fvContribs;
+                    }
+                });
+            };
+
+            const baseRate = proj.rate;
+            const variance = proj.variance || 0;
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: `Varianza superior (${(baseRate + variance).toFixed(2)}%)`,
+                            data: calcData(baseRate + variance),
+                            borderColor: '#1e3a8a', // Dark Blue
+                            backgroundColor: '#1e3a8a',
+                            borderWidth: 2,
+                            pointRadius: 4
+                        },
+                        {
+                            label: `Valor futuro (${baseRate.toFixed(2)}%)`,
+                            data: calcData(baseRate),
+                            borderColor: '#dc2626', // Red
+                            backgroundColor: '#dc2626',
+                            borderWidth: 2,
+                            pointRadius: 4
+                        },
+                        {
+                            label: `Varianza inferior (${(baseRate - variance).toFixed(2)}%)`,
+                            data: calcData(baseRate - variance),
+                            borderColor: '#14b8a6', // Teal
+                            backgroundColor: '#14b8a6',
+                            borderWidth: 2,
+                            pointRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        },
+                        title: {
+                            display: true,
+                            text: 'Ahorros totales',
+                            font: { size: 16 }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: function (value) {
+                                    return '$' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }, 100);
+};
+
+window.actions.closeProjectionChart = () => {
+    state.portfolio.activeChartProjectionIndex = null;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updateInvestmentObjective = (index, field, value) => {
+    if (blockPortfolioEdit()) return;
+    const obj = state.portfolio.investment.objectives[index];
+    if (!obj) return;
+    if (field === 'concept' || field === 'name' || field === 'time' || field === 'risk') {
+        obj[field] = value;
+    } else {
+        obj[field] = parseFloat(value) || 0;
+    }
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.addObjective = () => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.investment.objectives.push({ name: '', amount: 0, time: '', risk: '' });
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.removeObjective = (index) => {
+    if (blockPortfolioEdit()) return;
+    if (state.portfolio.investment.objectives.length <= 1) return;
+    state.portfolio.investment.objectives.splice(index, 1);
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.updateRealDistributionAmount = (key, value) => {
+    if (blockPortfolioEdit()) return;
+    const dist = state.portfolio.investment.realDistribution;
+    if (!dist[key]) return;
+    dist[key].amount = parseFloat(value) || 0;
+    recalculateDistributionPercentages(dist);
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.toggleInvestmentModal = (isOpen) => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.isInvestmentModalOpen = isOpen;
+    if (!isOpen) {
+        state.portfolio.editingInvestmentId = null;
+        state.portfolio.isEditInvestmentModalOpen = false;
+    }
+    updateUI();
+};
+
+window.actions.updateInvestmentFilter = (field, value) => {
+    state.portfolio.investmentFilterDraft = state.portfolio.investmentFilterDraft || defaultInvestmentFilters();
+    state.portfolio.investmentFilterDraft[field] = value;
+};
+
+window.actions.resetInvestmentFilters = () => {
+    state.portfolio.investmentFilters = defaultInvestmentFilters();
+    state.portfolio.investmentFilterDraft = defaultInvestmentFilters();
+    updateUI();
+};
+
+window.actions.applyInvestmentFilters = () => {
+    state.portfolio.investmentFilterDraft = state.portfolio.investmentFilterDraft || defaultInvestmentFilters();
+    state.portfolio.investmentFilters = { ...state.portfolio.investmentFilterDraft };
+    updateUI();
+};
+
+const resetInvestmentForm = () => {
+    const defaults = {
+        date: '',
+        objective: '',
+        classification: 'RENTA FIJA',
+        period: '',
+        rate: '',
+        amount: '',
+        expiry: '',
+        status: 'ACTIVO'
+    };
+
+    const setValue = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+    };
+
+    setValue('inv-date', defaults.date);
+    setValue('inv-objective', defaults.objective);
+    setValue('inv-classification', defaults.classification);
+    window.actions.updateToolOptions(defaults.classification);
+    setValue('inv-period', defaults.period);
+    setValue('inv-rate', defaults.rate);
+    setValue('inv-amount', defaults.amount);
+    setValue('inv-expiry', defaults.expiry);
+    setValue('inv-status', defaults.status);
+    setValue('inv-tool-custom', '');
+};
+
+window.actions.addInvestment = () => {
+    if (blockPortfolioEdit()) return;
+    // Get values from inputs (using IDs for simplicity in this generated modal)
+    const getVal = (id) => document.getElementById(id).value;
+    const amount = parseFloat(getVal('inv-amount')) || 0;
+    const rate = parseFloat(getVal('inv-rate')) || 0;
+
+    const newInv = {
+        id: Date.now(),
+        date: getVal('inv-date'),
+        objective: getVal('inv-objective'),
+        classification: getVal('inv-classification'),
+        tool: getVal('inv-tool') === 'OTRO' ? getVal('inv-tool-custom') : getVal('inv-tool'),
+        period: getVal('inv-period'),
+        rate,
+        amount,
+        expiry: getVal('inv-expiry'),
+        status: getVal('inv-status')
+    };
+
+    if (!newInv.amount || !newInv.classification) {
+        alert('Por favor ingrese al menos la clasificación y el monto.');
+        return;
+    }
+
+    if (getVal('inv-tool') === 'OTRO' && !newInv.tool) {
+        alert('Por favor especifique la herramienta personalizada.');
+        return;
+    }
+
+    const investments = state.portfolio.investment.executedInvestments || [];
+    investments.push(newInv);
+    state.portfolio.investment.executedInvestments = investments;
+
+    recalculateRealDistributionFromActiveInvestments();
+
+    updateUI();
+    resetInvestmentForm();
+    window.actions.savePortfolio();
+};
+
+window.actions.openEditInvestmentModal = (id) => {
+    if (blockPortfolioEdit()) return;
+    const exists = (state.portfolio.investment.executedInvestments || []).some((item) => item.id === id);
+    if (!exists) return;
+    state.portfolio.editingInvestmentId = id;
+    state.portfolio.isEditInvestmentModalOpen = true;
+    updateUI();
+};
+
+window.actions.closeEditInvestmentModal = () => {
+    if (blockPortfolioEdit()) return;
+    state.portfolio.isEditInvestmentModalOpen = false;
+    state.portfolio.editingInvestmentId = null;
+    updateUI();
+};
+
+window.actions.saveEditedInvestment = () => {
+    if (blockPortfolioEdit()) return;
+    const editingId = state.portfolio.editingInvestmentId;
+    if (!editingId) return;
+
+    const getVal = (id) => document.getElementById(id)?.value || '';
+    const amount = parseFloat(getVal('edit-inv-amount')) || 0;
+    const rate = parseFloat(getVal('edit-inv-rate')) || 0;
+    const tool = getVal('edit-inv-tool') === 'OTRO' ? getVal('edit-inv-tool-custom') : getVal('edit-inv-tool');
+
+    if (!amount || !getVal('edit-inv-classification')) {
+        alert('Por favor ingrese al menos la clasificaciÃ³n y el monto.');
+        return;
+    }
+
+    if (getVal('edit-inv-tool') === 'OTRO' && !tool) {
+        alert('Por favor especifique la herramienta personalizada.');
+        return;
+    }
+
+    const investments = state.portfolio.investment.executedInvestments || [];
+    const index = investments.findIndex((inv) => inv.id === editingId);
+    if (index < 0) return;
+
+    investments[index] = {
+        ...investments[index],
+        date: getVal('edit-inv-date'),
+        objective: getVal('edit-inv-objective'),
+        classification: getVal('edit-inv-classification'),
+        tool,
+        period: getVal('edit-inv-period'),
+        rate,
+        amount,
+        expiry: getVal('edit-inv-expiry'),
+        status: getVal('edit-inv-status')
+    };
+
+    state.portfolio.investment.executedInvestments = investments;
+    recalculateRealDistributionFromActiveInvestments();
+    state.portfolio.isEditInvestmentModalOpen = false;
+    state.portfolio.editingInvestmentId = null;
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+window.actions.deleteInvestment = (id) => {
+    if (blockPortfolioEdit()) return;
+    if (state.portfolio.editingInvestmentId === id) {
+        state.portfolio.isEditInvestmentModalOpen = false;
+        state.portfolio.editingInvestmentId = null;
+    }
+    state.portfolio.investment.executedInvestments = state.portfolio.investment.executedInvestments.filter(i => i.id !== id);
+    recalculateRealDistributionFromActiveInvestments();
+    updateUI();
+    window.actions.savePortfolio();
+};
+
+// Tool options mapping
+const toolOptions = {
+    'RENTA FIJA': ['BONOS', 'CETES', 'UDIBONOS', 'NU', 'KLAR', 'STORI', 'KUBOFINANCIERO', 'FINSUS', 'FONDEADORA', 'DINN', 'SUPERTASAS', 'COVALTO', 'OTRO'],
+    'RENTA VARIABLE': ['ACCIONES', 'ETF\'s', 'NEGOCIO PROPIO', 'PPR GNP', 'ÍNDICES', 'FONDOS MUTUOS', 'AFORE SURA', 'FIBRAS', 'FOREX', 'FUTUROS', 'PLAN PERSONAL DE RETIRO', 'MATERIAS PRIMAS', 'COMMODITIES', 'OptiMaxx elite', 'OTRO'],
+    'LIQUIDO': ['BONDDIA', 'NU', 'KLAR', 'UALA', 'CUENTA BANCARIA', 'PAGARÉS', 'CUENTAS DE AHORRO', 'OTRO'],
+    'ALTERNATIVO': ['BIENES RAÍCES', 'FONDOS PRIVADOS', 'CROWDFUNDING', 'METALES', 'CRIPTOMONEDAS', 'COLECCIONABLES', 'YO TE PRESTO', '100 LADRILLOS', 'OTRO']
+};
+
+window.actions.updateToolOptions = (classification, prefix = 'inv') => {
+    const toolSelect = document.getElementById(`${prefix}-tool`);
+    if (!toolSelect) return;
+
+    const options = toolOptions[classification] || [];
+    toolSelect.innerHTML = options.map(opt => `<option value="${opt}">${opt}</option>`).join('');
+    
+    // Reset custom tool input when classification changes
+    const customInputContainer = document.getElementById(`${prefix}-tool-custom-container`);
+    const customInput = document.getElementById(`${prefix}-tool-custom`);
+    if (customInputContainer && customInput) {
+        customInputContainer.classList.add('hidden');
+        customInput.value = '';
+    }
+};
+
+window.actions.checkCustomTool = (value, prefix = 'inv') => {
+    const customInputContainer = document.getElementById(`${prefix}-tool-custom-container`);
+    if (!customInputContainer) return;
+    
+    if (value === 'OTRO') {
+        customInputContainer.classList.remove('hidden');
+    } else {
+        customInputContainer.classList.add('hidden');
+    }
+};
+
+window.actions.openDeleteConfirmation = (index) => {
+    state.portfolio.deleteConfirmation = { isOpen: true, index };
+    updateUI();
+};
+
+window.actions.closeDeleteConfirmation = () => {
+    state.portfolio.deleteConfirmation = { isOpen: false, index: null };
+    updateUI();
+};
+
+window.actions.confirmDeleteProjection = () => {
+    const index = state.portfolio.deleteConfirmation.index;
+    if (index !== null) {
+        window.actions.removeProjection(index);
+    }
+    window.actions.closeDeleteConfirmation();
+};
+
+export const Portfolio = {
+    render: () => {
+        const { others, liquid, expenses2026, expenses2027, savingsPlan, currentView, investment, activeChartProjectionIndex, isInvestmentModalOpen, isEditInvestmentModalOpen } = state.portfolio;
+
+        const readOnly = isPortfolioReadOnly();
+        const shouldAnimate = !state.portfolio.hasAnimated;
+        if (shouldAnimate) {
+            state.portfolio.hasAnimated = true;
+        }
+        const animateClass = shouldAnimate ? 'animate-fade-in' : '';
+        console.log('Portfolio.render called. currentView:', currentView);
+
+        if (!state.portfolio.isLoaded && !state.portfolio.isLoading) {
+            setTimeout(() => window.actions.loadPortfolio(), 0);
+        }
+
+
+        // --- Helper: Format Currency ---
+        // Ensure formatCurrency is available or use a local helper if import fails
+        const fmt = (val) => window.formatCurrency ? window.formatCurrency(val) : (val).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+        // --- Calculations for Initial View ---
+        const totalOtros = others.reduce((sum, item) => sum + item.value, 0);
+        const totalLiquid = liquid;
+        const total2026 = expenses2026.reduce((sum, item) => sum + item.value, 0);
+        const total2027 = expenses2027.reduce((sum, item) => sum + item.value, 0);
+        const totalComprometido = total2026 + total2027;
+        const totalDisponibles = -totalComprometido;
+        const totalAhorroMensual = savingsPlan.goals.reduce((sum, goal) => sum + goal.amount, 0);
+
+        // Footer Totals
+        const footerTotals = [0, 0, 0, 0];
+        savingsPlan.monthlyData.forEach(row => {
+            row.forEach((val, idx) => {
+                if (idx < 4) footerTotals[idx] += val;
+            });
+        });
+
+        // --- Render Helpers ---
+
+        const renderPlanAhorroRows = () => {
+            const months = [
+                'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+                'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+            ];
+            return months.map((month, i) => {
+                const row = savingsPlan.monthlyData[i];
+                const rowTotal = row.reduce((a, b) => a + b, 0);
+                return `
+                <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors">
+                    <td class="p-3 font-medium text-zinc-900 dark:text-white border-r border-zinc-100 dark:border-zinc-800">${month.toUpperCase()}</td>
+                    ${row.map((val, colIndex) => `
+                        <td class="p-0 border-r border-zinc-100 dark:border-zinc-800 relative group">
+                            <input type="number" value="${val}"
+                                onchange="window.actions.updatePortfolioMonthData(${i}, ${colIndex}, this.value)"
+                                class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-lime focus:bg-white dark:focus:bg-zinc-800 outline-none text-zinc-600 dark:text-zinc-400 group-hover:bg-zinc-50 dark:group-hover:bg-zinc-800/50 transition-colors"
+                            />
+                        </td>
+                    `).join('')}
+                    <td class="p-3 text-right font-bold text-zinc-900 bg-zinc-900 text-white border-l border-zinc-800">${formatCurrency(rowTotal)}</td>
+                </tr>`;
+            }).join('');
+        };
+
+        // --- View 1: Levantamiento Inicial ---
+        const renderInitialView = () => `
+            <div class="space-y-8 max-w-7xl mx-auto ${animateClass}">
+                <!-- LEVANTAMIENTO INICIAL -->
+                <div class="bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+                    <div class="bg-brand-lime p-4 text-center">
+                        <h2 class="text-xl font-black text-zinc-900 uppercase tracking-wide">Levantamiento Inicial</h2>
+                    </div>
+                    <div class="p-6 grid lg:grid-cols-2 gap-8">
+                        <!-- Left Column: Cantidad Total de Ahorro -->
+                        <div class="space-y-6">
+                            <div class="overflow-hidden rounded-xl border border-blue-200 dark:border-blue-900/30">
+                                <div class="bg-brand-blue p-3 text-white font-bold text-center uppercase text-sm tracking-wider">Cantidad Total de Ahorro</div>
+                                <table class="w-full text-sm">
+                                    <tbody class="divide-y divide-blue-50 dark:divide-blue-900/10">
+                                        ${others.map((item, index) => `
+                                        <tr class="${index % 2 === 0 ? 'bg-blue-50/50 dark:bg-blue-900/5' : 'bg-white dark:bg-zinc-900'}">
+                                            <td class="p-3 font-medium text-zinc-700 dark:text-zinc-300">${item.label}</td>
+                                            <td class="p-0 text-right font-bold text-zinc-900 dark:text-white relative">
+                                                <input type="number" value="${item.value}" onchange="window.actions.updatePortfolioOther(${index}, this.value)"
+                                                    class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-blue outline-none" />
+                                            </td>
+                                        </tr>`).join('')}
+                                        <tr class="bg-blue-50 dark:bg-blue-900/20 font-bold">
+                                            <td class="p-3 text-blue-800 dark:text-blue-300">TOTAL OTRO</td>
+                                            <td class="p-3 text-right text-blue-800 dark:text-blue-300">${formatCurrency(totalOtros)}</td>
+                                        </tr>
+                                        <tr class="bg-white dark:bg-zinc-900">
+                                            <td class="p-3 font-bold text-zinc-900 dark:text-white">DINERO ADICIONAL LIQUIDO</td>
+                                            <td class="p-3 text-right font-bold text-zinc-900 dark:text-white">$0.00</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Right Column: Gastos Futuros -->
+                        <div class="space-y-6">
+                            <!-- 2026 -->
+                            <div class="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                <div class="bg-black text-white p-3 font-bold text-center uppercase text-sm tracking-wider">Gastos Futuros</div>
+                                <div class="bg-brand-blue p-2 text-white font-bold text-center text-xs">2026</div>
+                                <table class="w-full text-sm">
+                                    <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
+                                        ${expenses2026.map((item, index) => `
+                                        <tr>
+                                            <td class="p-3 text-zinc-600 dark:text-zinc-400">${item.label}</td>
+                                            <td class="p-0 text-right font-medium text-zinc-900 dark:text-white relative">
+                                                <input type="number" value="${item.value}" onchange="window.actions.updatePortfolioExpense('expenses2026', ${index}, this.value)"
+                                                    class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-blue outline-none" />
+                                            </td>
+                                        </tr>`).join('')}
+                                        <tr class="bg-zinc-50 dark:bg-zinc-800/50 font-bold border-t border-zinc-200 dark:border-zinc-700">
+                                            <td class="p-3">TOTAL</td>
+                                            <td class="p-3 text-right">${formatCurrency(total2026)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <!-- 2027 -->
+                            <div class="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                <div class="bg-brand-blue p-2 text-white font-bold text-center text-xs">2027</div>
+                                <table class="w-full text-sm">
+                                    <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
+                                        ${expenses2027.map((item, index) => `
+                                        <tr>
+                                            <td class="p-3 text-zinc-600 dark:text-zinc-400">${item.label}</td>
+                                            <td class="p-0 text-right font-medium text-zinc-900 dark:text-white relative">
+                                                <input type="number" value="${item.value}" onchange="window.actions.updatePortfolioExpense('expenses2027', ${index}, this.value)"
+                                                    class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-blue outline-none" />
+                                            </td>
+                                        </tr>`).join('')}
+                                        <tr class="bg-zinc-50 dark:bg-zinc-800/50 font-bold border-t border-zinc-200 dark:border-zinc-700">
+                                            <td class="p-3">TOTAL</td>
+                                            <td class="p-3 text-right">${formatCurrency(total2027)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <!-- Summary Footer -->
+                            <div class="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/30">
+                                <table class="w-full text-sm font-bold">
+                                    <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
+                                        <tr><td class="p-3 text-zinc-600 dark:text-zinc-400">AHORRO</td><td class="p-3 text-right text-zinc-900 dark:text-white">-</td></tr>
+                                        <tr><td class="p-3 text-zinc-600 dark:text-zinc-400">COMPROMETIDO</td><td class="p-3 text-right text-zinc-900 dark:text-white">${formatCurrency(totalComprometido)}</td></tr>
+                                        <tr>
+                                            <td class="p-3 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white border-t-2 border-zinc-300 dark:border-zinc-600">QUEDAN DISPONIBLES PARA INVERTIR</td>
+                                            <td class="p-3 bg-white dark:bg-zinc-900 text-right text-red-500 border-t-2 border-zinc-300 dark:border-zinc-600 font-black text-lg">${formatCurrency(totalDisponibles)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PLAN DE AHORRO -->
+                <div class="bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+                    <div class="bg-black text-white p-3 text-center uppercase tracking-wide font-bold">Plan de Ahorro</div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm whitespace-nowrap">
+                            <thead>
+                                <tr class="bg-brand-lime text-black font-bold uppercase text-xs">
+                                    <th class="p-3 text-left w-64 border-r border-black/10">Metas de Ahorro</th>
+                                    <th class="p-3 text-center border-r border-black/10 w-32">1</th>
+                                    <th class="p-3 text-center border-r border-black/10 w-32">2</th>
+                                    <th class="p-3 text-center border-r border-black/10 w-32">3</th>
+                                    <th class="p-3 text-center w-32">4</th>
+                                    <th class="p-3 bg-black text-white w-40">Total Ahorro Mensual</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-zinc-200 dark:divide-zinc-800">
+                                <tr class="bg-brand-lime/30 font-bold">
+                                    <td class="p-3 border-r border-zinc-200 dark:border-zinc-700">CANTIDAD</td>
+                                    ${savingsPlan.goals.map((goal, index) => `
+                                        <td class="p-0 border-r border-zinc-200 dark:border-zinc-700 relative">
+                                            <input type="number" value="${goal.amount}" onchange="window.actions.updatePortfolioGoalAmount(${index}, this.value)"
+                                                class="w-full h-full p-2 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-lime outline-none" />
+                                        </td>`).join('')}
+                                    <td class="p-3 bg-black text-white text-right">${formatCurrency(totalAhorroMensual)}</td>
+                                </tr>
+                                <tr class="bg-brand-lime/10 font-bold text-xs text-zinc-600 dark:text-zinc-400 uppercase">
+                                    <td class="p-3 border-r border-zinc-200 dark:border-zinc-700">MESES</td>
+                                    ${savingsPlan.goals.map((goal, index) => `
+                                        <td class="p-0 text-center border-r border-zinc-200 dark:border-zinc-700 relative">
+                                            <input type="number" value="${goal.months}" onchange="window.actions.updatePortfolioGoalMonths(${index}, this.value)"
+                                                class="w-full h-full p-2 text-center bg-transparent border-none focus:ring-2 focus:ring-brand-lime outline-none" />
+                                        </td>`).join('')}
+                                    <td class="p-3 bg-zinc-900 border-l border-zinc-800"></td>
+                                </tr>
+                                ${renderPlanAhorroRows()}
+                            </tbody>
+                            <tfoot class="bg-black text-white font-bold">
+                                <tr>
+                                    <td class="p-3 uppercase">Total Ahorro</td>
+                                    ${footerTotals.map(total => `<td class="p-3 text-right">${formatCurrency(total)}</td>`).join('')}
+                                    <td class="p-3"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // --- View 2: Portafolio de Inversión ---
+        const renderInvestmentView = () => {
+            const investmentFilters = state.portfolio.investmentFilters || defaultInvestmentFilters();
+            const investmentFilterDraft = state.portfolio.investmentFilterDraft || investmentFilters;
+            const executedInvestments = investment.executedInvestments || [];
+            const filteredInvestments = applyInvestmentFilters(executedInvestments, investmentFilters);
+            const editingInvestment = executedInvestments.find((inv) => inv.id === state.portfolio.editingInvestmentId) || null;
+            const editClassification = editingInvestment?.classification || 'RENTA FIJA';
+            const editToolOptions = toolOptions[editClassification] || [];
+            const editToolIsCustom = editingInvestment ? !editToolOptions.includes(editingInvestment.tool) : false;
+            const filteredTotalAmount = filteredInvestments.reduce((sum, inv) => sum + (parseFloat(inv.amount) || 0), 0);
+            const realTotal = investment.realDistribution.fixed.amount
+                + investment.realDistribution.alternative.amount
+                + investment.realDistribution.liquid.amount
+                + investment.realDistribution.variable.amount;
+            return `
+            <div class="space-y-8 max-w-full mx-auto ${animateClass} p-4 bg-white dark:bg-zinc-900 dark:text-white min-h-screen">
+
+
+                 
+                 <div class="grid lg:grid-cols-2 gap-8 items-start">
+                    <!-- Left Column: Config & Distribution -->
+                    <div class="space-y-6">
+                        
+                        <!-- Input Fields -->
+                        <div class="space-y-3 mb-6">
+                            <div class="flex items-center justify-between bg-blue-500 text-white p-2 border border-gray-400">
+                                <span class="font-bold text-sm ml-8">MONTO DE INVERSIÓN</span>
+                                <div class="bg-white text-black px-2 py-1 w-64 flex items-center border border-gray-400">
+                                    <span>$</span>
+                                    <input type="number" value="${investment.amount}" onchange="window.actions.updateInvestmentAmount(this.value)"
+                                        class="w-full outline-none text-right font-bold border-none h-full bg-transparent" ${readOnly ? 'disabled' : ''} />
+                                </div>
+                            </div>
+                            <div class="flex items-center justify-between bg-blue-500 text-white p-2 border border-blue-600">
+                                <span class="font-bold text-sm ml-8">TIPO DE PORTAFOLIO</span>
+                                <div class="bg-white px-2 py-1 w-64 text-right border border-gray-400">
+                                    <select onchange="window.actions.updateInvestmentType(this.value)" class="w-full outline-none font-bold text-black text-center bg-transparent border-none h-full" ${readOnly ? 'disabled' : ''}>
+                                        <option value="ARRIESGADO" ${investment.type === 'ARRIESGADO' ? 'selected' : ''}>ARRIESGADO</option>
+                                        <option value="MODERADO" ${investment.type === 'MODERADO' ? 'selected' : ''}>MODERADO</option>
+                                        <option value="CONSERVADOR" ${investment.type === 'CONSERVADOR' ? 'selected' : ''}>CONSERVADOR</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recommended Distribution Table -->
+                        <div class="mb-8">
+                            <div class="bg-brand-lime p-1 font-bold text-center border border-black/20 text-xs text-black">DISTRIBUCIÓN RECOMENDADA</div>
+                            <table class="w-full text-xs font-bold border-collapse">
+                                <tbody>
+                                    <tr class="bg-blue-100">
+                                        <td class="w-24 p-0"><div class="bg-blue-500 text-white p-1 text-xs">RENTA FIJA</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.fixed.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-blue-900 text-lg">${investment.distribution.fixed.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-gray-100">
+                                        <td class="w-24 p-0"><div class="bg-zinc-800 text-white p-1 text-xs">ALTERNATIVO</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.alternative.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-zinc-900 text-lg">${investment.distribution.alternative.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-blue-100">
+                                        <td class="w-24 p-0"><div class="bg-brand-lime text-black p-1 text-xs">LIQUIDO</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.liquid.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-blue-900 text-lg">${investment.distribution.liquid.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-gray-100">
+                                        <td class="w-24 p-0"><div class="bg-yellow-400 text-black p-1 text-xs">RENTA VARIABLE</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.variable.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-zinc-900 text-lg">${investment.distribution.variable.percent}%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                         <!-- Pie Chart -->
+                         <div class="mt-4 flex justify-center bg-white dark:bg-zinc-900 rounded-xl border border-gray-300 dark:border-zinc-800 p-8 shadow-sm">
+                            <div class="relative w-64 h-64 rounded-full shadow-lg" style="background: conic-gradient(
+                                #3b82f6 0% ${investment.distribution.fixed.percent}%,
+                                #3f3f46 ${investment.distribution.fixed.percent}% ${investment.distribution.fixed.percent + investment.distribution.alternative.percent}%,
+                                #84cc16 ${investment.distribution.fixed.percent + investment.distribution.alternative.percent}% ${investment.distribution.fixed.percent + investment.distribution.alternative.percent + investment.distribution.liquid.percent}%,
+                                #facc15 ${investment.distribution.fixed.percent + investment.distribution.alternative.percent + investment.distribution.liquid.percent}% 100%
+                            )">
+                                 ${(() => {
+                    const p = investment.distribution;
+                    const slices = [
+                        { pct: p.fixed.percent, color: 'text-white' },
+                        { pct: p.alternative.percent, color: 'text-white' },
+                        { pct: p.liquid.percent, color: 'text-black' },
+                        { pct: p.variable.percent, color: 'text-black' }
+                    ];
+                    let acc = 0;
+                    return slices.map(slice => {
+                        if (slice.pct === 0) return '';
+                        // Calculate angle for center of slice
+                        const midAngleDeg = (acc + slice.pct / 2) * 3.6;
+                        acc += slice.pct;
+                        // Convert to radians (0deg at top = -90deg math)
+                        const rad = (midAngleDeg - 90) * (Math.PI / 180);
+                        // Position from center (50%, 50%) with radius ~35%
+                        const left = 50 + 35 * Math.cos(rad);
+                        const top = 50 + 35 * Math.sin(rad);
+
+                        return `<span class="absolute font-bold text-xs drop-shadow-md ${slice.color}" 
+                                                      style="left: ${left}%; top: ${top}%; transform: translate(-50%, -50%);">
+                                                      ${slice.pct}%
+                                                 </span>`;
+                    }).join('');
+                })()}
+                            </div>
+                         </div>
+
+                         <!-- Objectives Table -->
+                            <div class="mt-8">
+                                <table class="w-full text-xs font-bold border-collapse">
+                                    <thead>
+                                        <tr class="bg-brand-lime text-black text-center border border-black/50"><th colspan="${readOnly ? '5' : '6'}" class="p-1">OBJETIVOS</th></tr>
+                                        <tr class="bg-blue-500 text-white text-center border border-black/50">
+                                            <th class="p-1 w-8 border-r border-dotted border-white">#</th>
+                                            <th class="p-1 w-1/3 border-r border-dotted border-white">OBJETIVO</th>
+                                            <th class="p-1 w-1/4 border-r border-dotted border-white">MONTO</th>
+                                            <th class="p-1 w-1/4 border-r border-dotted border-white">TIEMPO</th>
+                                            <th class="p-1 ${readOnly ? '' : 'border-r border-dotted border-white'}">RIESGO</th>
+                                            ${!readOnly ? '<th class="p-1 w-6"></th>' : ''}
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-gray-100 border border-black/50 dark:border-zinc-700">
+                                        ${investment.objectives.map((obj, i) => `
+                                            <tr class="text-center h-7 border-b border-black/20 border-dotted dark:bg-zinc-800 dark:text-white">
+                                                <td class="p-0 border-r border-black/20 border-dotted">${i + 1}</td>
+                                                <td class="p-0 border-r border-black/20 border-dotted">
+                                                    <input type="text" value="${obj.name || ''}" 
+                                                        onchange="window.actions.updateInvestmentObjective(${i}, 'name', this.value)"
+                                                        class="w-full h-full p-1 text-center bg-transparent outline-none dark:text-white uppercase" ${readOnly ? 'disabled' : ''} />
+                                                </td>
+                                                <td class="p-0 border-r border-black/20 border-dotted">
+                                                    <div class="flex h-full items-center px-1">
+                                                        <span class="mr-1 text-black/50 dark:text-gray-400">$</span>
+                                                        <input type="number" step="0.01" value="${obj.amount || 0}"
+                                                            onchange="window.actions.updateInvestmentObjective(${i}, 'amount', this.value)"
+                                                            class="w-full h-full p-1 text-right bg-transparent outline-none dark:text-white" ${readOnly ? 'disabled' : ''} />
+                                                    </div>
+                                                </td>
+                                                <td class="p-0 border-r border-black/20 border-dotted">
+                                                    <input type="text" value="${obj.time || ''}" 
+                                                        onchange="window.actions.updateInvestmentObjective(${i}, 'time', this.value)"
+                                                        class="w-full h-full p-1 text-center bg-transparent outline-none dark:text-white uppercase" ${readOnly ? 'disabled' : ''} />
+                                                </td>
+                                                <td class="p-0 ${!readOnly ? 'border-r border-black/20 border-dotted' : ''} relative group">
+                                                    <div class="h-full w-full flex items-center justify-center">
+                                                        <select onchange="window.actions.updateInvestmentObjective(${i}, 'risk', this.value)"
+                                                            class="w-full h-full p-1 text-center bg-transparent outline-none dark:text-white appearance-none" ${readOnly ? 'disabled' : ''}>
+                                                            <option value="" ${!obj.risk ? 'selected' : ''}>Seleccione</option>
+                                                            <option value="CONSERVADOR" ${obj.risk === 'CONSERVADOR' ? 'selected' : ''}>CONSERVADOR</option>
+                                                            <option value="MODERADO" ${obj.risk === 'MODERADO' ? 'selected' : ''}>MODERADO</option>
+                                                            <option value="ARRIESGADO" ${obj.risk === 'ARRIESGADO' ? 'selected' : ''}>ARRIESGADO</option>
+                                                        </select>
+                                                    </div>
+                                                </td>
+                                                ${!readOnly ? `<td class="p-0 text-center">
+                                                    <button onclick="window.actions.removeObjective(${i})" class="text-red-400 hover:text-red-600 px-1 font-bold" title="Eliminar fila">✕</button>
+                                                </td>` : ''}
+                                            </tr>`).join('')}
+                                    </tbody>
+                                </table>
+                                ${!readOnly ? `<button onclick="window.actions.addObjective()" class="mt-2 w-full bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold py-1 px-2 transition">+ Agregar Objetivo</button>` : ''}
+                            </div>
+                            
+                         <!-- Real Distribution Check -->
+                         <div class="mt-8">
+                            <div class="mb-4">
+                                <button onclick="window.actions.toggleInvestmentModal(true)" 
+                                    class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg shadow hover:bg-blue-700 transition font-bold text-xs uppercase tracking-wider ${readOnly ? 'hidden' : ''}">
+                                    Agregar Inversión
+                                </button>
+                            </div>
+                            <div class="bg-brand-lime text-black text-center font-bold p-1 border border-black/50 text-xs">DISTRIBUCIÓN REAL</div>
+                            <table class="w-full text-xs font-bold border-collapse border border-black/50 bg-white dark:bg-zinc-900">
+                                <thead>
+                                    <tr class="bg-white dark:bg-zinc-900 border-b border-black/50">
+                                        <th class="p-1 text-left dark:text-white pl-2">CONCEPTO</th>
+                                        <th class="p-1 text-center dark:text-white border-l border-black/50">CANTIDAD</th>
+                                        <th class="p-1 text-center dark:text-white border-l border-black/50">PARTICIPACIÓN</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr class="bg-blue-300 dark:bg-blue-900 border-b border-white">
+                                        <td class="p-1 px-2 text-black dark:text-white">RENTA FIJA</td>
+                                        <td class="p-0 border-l border-white">
+                                            <div class="flex items-center justify-end px-2">
+                                                <span class="mr-1 text-black dark:text-white">$</span>
+                                                <span class="w-full text-right text-black dark:text-white">${investment.realDistribution.fixed.amount.toFixed(2)}</span>
+                                            </div>
+                                        </td>
+                                        <td class="p-1 text-center border-l border-white text-black dark:text-white">${investment.realDistribution.fixed.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-zinc-800 text-white border-b border-white">
+                                        <td class="p-1 px-2">ALTERNATIVO</td>
+                                        <td class="p-0 border-l border-white">
+                                            <div class="flex items-center justify-end px-2">
+                                                <span class="mr-1">$</span>
+                                                <span class="w-full text-right text-white">${investment.realDistribution.alternative.amount.toFixed(2)}</span>
+                                            </div>
+                                        </td>
+                                        <td class="p-1 text-center border-l border-white">${investment.realDistribution.alternative.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-brand-lime border-b border-white">
+                                        <td class="p-1 px-2 text-black">LIQUIDO</td>
+                                        <td class="p-0 border-l border-white">
+                                            <div class="flex items-center justify-end px-2">
+                                                <span class="mr-1 text-black">$</span>
+                                                <span class="w-full text-right text-black">${investment.realDistribution.liquid.amount.toFixed(2)}</span>
+                                            </div>
+                                        </td>
+                                        <td class="p-1 text-center border-l border-white text-black">${investment.realDistribution.liquid.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-yellow-400 border-b border-black/50 border-dashed">
+                                        <td class="p-1 px-2 text-black">RENTA VARIABLE</td>
+                                        <td class="p-0 border-l border-white">
+                                            <div class="flex items-center justify-end px-2">
+                                                <span class="mr-1 text-black">$</span>
+                                                <span class="w-full text-right text-black">${investment.realDistribution.variable.amount.toFixed(2)}</span>
+                                            </div>
+                                        </td>
+                                        <td class="p-1 text-center border-l border-white text-black">${investment.realDistribution.variable.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-white dark:bg-zinc-900">
+                                        <td class="p-1 px-2 uppercase font-bold dark:text-white">TOTAL</td>
+                                        <td class="p-1 text-right px-2 border-l border-dotted border-black dark:border-zinc-700 dark:text-white">$ ${realTotal.toFixed(2)}</td>
+                                        <td class="p-1 text-center border-l border-dotted border-black dark:border-zinc-700 dark:text-white">100%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                         </div>
+
+                         <!-- Real Distribution Pie Chart -->
+                         <div class="mt-8 text-center bg-white dark:bg-zinc-900 p-4 rounded-xl border border-gray-300 dark:border-zinc-800 shadow-sm">
+                            <h3 class="font-bold text-gray-400 mb-4 uppercase text-sm">MI PORTAFOLIO ACTUAL POR CLASIFICACIÓN</h3>
+                            <div class="flex justify-center">
+                                <div class="relative w-48 h-48 rounded-full shadow-md" style="background: conic-gradient(
+                                    #3b82f6 0% ${investment.realDistribution.fixed.percent}%,
+                                    #3f3f46 ${investment.realDistribution.fixed.percent}% ${investment.realDistribution.fixed.percent + investment.realDistribution.alternative.percent}%,
+                                    #84cc16 ${investment.realDistribution.fixed.percent + investment.realDistribution.alternative.percent}% ${investment.realDistribution.fixed.percent + investment.realDistribution.alternative.percent + investment.realDistribution.liquid.percent}%,
+                                    #facc15 ${investment.realDistribution.fixed.percent + investment.realDistribution.alternative.percent + investment.realDistribution.liquid.percent}% 100%
+                                )">
+                                     ${(() => {
+                    const p = investment.realDistribution;
+                    const slices = [
+                        { pct: p.fixed.percent, color: 'text-white' },
+                        { pct: p.alternative.percent, color: 'text-white' },
+                        { pct: p.liquid.percent, color: 'text-black' },
+                        { pct: p.variable.percent, color: 'text-black' }
+                    ];
+                    let acc = 0;
+                    return slices.map(slice => {
+                        if (slice.pct === 0) return '';
+                        const midAngleDeg = (acc + slice.pct / 2) * 3.6;
+                        acc += slice.pct;
+                        const rad = (midAngleDeg - 90) * (Math.PI / 180);
+                        const left = 50 + 35 * Math.cos(rad);
+                        const top = 50 + 35 * Math.sin(rad);
+
+                        return `<span class="absolute font-bold text-xs drop-shadow-md ${slice.color}" 
+                                                          style="left: ${left}%; top: ${top}%; transform: translate(-50%, -50%);">
+                                                          ${slice.pct}%
+                                                     </span>`;
+                    }).join('');
+                })()}
+                                </div>
+                            </div>
+                         </div>
+
+                    </div>
+
+                         <!-- INVESTMENT MODAL -->
+                         ${isInvestmentModalOpen ? `
+                            <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+                                <div class="bg-white dark:bg-zinc-900 w-full max-w-6xl max-h-[90vh] overflow-y-auto rounded-3xl shadow-2xl border border-zinc-200 dark:border-zinc-800 flex flex-col">
+                                    <div class="bg-brand-lime p-4 flex justify-between items-center sticky top-0 z-10">
+                                        <h3 class="font-black text-zinc-900 uppercase tracking-wide text-xl">PORTAFOLIO</h3>
+                                        <button onclick="window.actions.toggleInvestmentModal(false)" class="p-2 bg-black/10 hover:bg-black/20 rounded-full transition">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-black"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                        </button>
+                                    </div>
+                                    
+                                    <div class="p-6 space-y-8">
+                                        <!-- Form -->
+                                        <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-zinc-50 dark:bg-zinc-800/50 p-6 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700">
+                                            
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Fecha de Ejecución</label>
+                                                <input type="date" id="inv-date" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Objetivo</label>
+                                                <input type="text" id="inv-objective" placeholder="Ej. Jubilación" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Clasificación</label>
+                                                <select id="inv-classification" onchange="window.actions.updateToolOptions(this.value)" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                    <option value="RENTA FIJA">RENTA FIJA</option>
+                                                    <option value="RENTA VARIABLE">RENTA VARIABLE</option>
+                                                    <option value="ALTERNATIVO">ALTERNATIVO</option>
+                                                    <option value="LIQUIDO">LIQUIDO</option>
+                                                </select>
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Herramienta</label>
+                                                <select id="inv-tool" onchange="window.actions.checkCustomTool(this.value)" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                    ${toolOptions['RENTA FIJA'].map(opt => `<option value="${opt}">${opt}</option>`).join('')}
+                                                </select>
+                                                <div id="inv-tool-custom-container" class="hidden mt-2">
+                                                    <input type="text" id="inv-tool-custom" placeholder="Especifique herramienta" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                </div>
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Periodo</label>
+                                                <input type="text" id="inv-period" placeholder="Ej. Anual" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Tasa de Interés (%)</label>
+                                                <input type="number" step="0.01" id="inv-rate" placeholder="0.00" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Monto $</label>
+                                                <input type="number" step="0.01" id="inv-amount" placeholder="0.00" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Fecha de Vencimiento</label>
+                                                <input type="date" id="inv-expiry" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                            </div>
+                                            <div class="space-y-1">
+                                                <label class="text-xs font-bold text-zinc-500 uppercase">Estatus</label>
+                                                 <select id="inv-status" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                    <option value="ACTIVO">ACTIVO</option>
+                                                    <option value="VENCIDO">VENCIDO</option>
+                                                    <option value="CANCELADO">CANCELADO</option>
+                                                    <option value="PENDIENTE">PENDIENTE</option>
+                                                </select>
+                                            </div>
+                                            <div class="flex items-end">
+                                                <button onclick="window.actions.addInvestment()" class="w-full bg-blue-600 text-white font-bold p-2 rounded hover:bg-blue-700 transition uppercase text-sm">
+                                                    Agregar
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <!-- Filters -->
+                                        <div class="bg-white dark:bg-zinc-900 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                                                <div>
+                                                    <div class="text-xs font-bold text-zinc-500 uppercase">Filtros</div>
+                                                    <div class="text-xs text-zinc-400">Resultados: ${filteredInvestments.length} / ${executedInvestments.length}</div>
+                                                    <div class="text-xs text-zinc-400">Suma filtrada: ${formatCurrency(filteredTotalAmount)}</div>
+                                                </div>
+                                                <div class="flex flex-wrap gap-2">
+                                                    <button onclick="window.actions.applyInvestmentFilters()" class="px-3 py-1.5 rounded bg-blue-600 text-white text-xs font-bold uppercase hover:bg-blue-700 transition">
+                                                        Aplicar filtros
+                                                    </button>
+                                                    <button onclick="window.actions.resetInvestmentFilters()" class="px-3 py-1.5 rounded bg-zinc-900 text-white text-xs font-bold uppercase hover:bg-zinc-800 transition">
+                                                        Limpiar filtros
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Fecha de Ejecución</label>
+                                                    <input type="date" value="${investmentFilterDraft.date || ''}" onchange="window.actions.updateInvestmentFilter('date', this.value)" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Objetivo</label>
+                                                    <input type="text" value="${investmentFilterDraft.objective || ''}" onchange="window.actions.updateInvestmentFilter('objective', this.value)" placeholder="Buscar" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Clasificación</label>
+                                                    <select onchange="window.actions.updateInvestmentFilter('classification', this.value)" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                        <option value="" ${!investmentFilterDraft.classification ? 'selected' : ''}>Todas</option>
+                                                        <option value="RENTA FIJA" ${investmentFilterDraft.classification === 'RENTA FIJA' ? 'selected' : ''}>RENTA FIJA</option>
+                                                        <option value="RENTA VARIABLE" ${investmentFilterDraft.classification === 'RENTA VARIABLE' ? 'selected' : ''}>RENTA VARIABLE</option>
+                                                        <option value="ALTERNATIVO" ${investmentFilterDraft.classification === 'ALTERNATIVO' ? 'selected' : ''}>ALTERNATIVO</option>
+                                                        <option value="LIQUIDO" ${investmentFilterDraft.classification === 'LIQUIDO' ? 'selected' : ''}>LIQUIDO</option>
+                                                    </select>
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Herramienta</label>
+                                                    <input type="text" value="${investmentFilterDraft.tool || ''}" onchange="window.actions.updateInvestmentFilter('tool', this.value)" placeholder="Buscar" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Periodo</label>
+                                                    <input type="text" value="${investmentFilterDraft.period || ''}" onchange="window.actions.updateInvestmentFilter('period', this.value)" placeholder="Buscar" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Tasa de Interés (%)</label>
+                                                    <div class="flex gap-2">
+                                                        <input type="number" step="0.01" value="${investmentFilterDraft.rateMin || ''}" onchange="window.actions.updateInvestmentFilter('rateMin', this.value)" placeholder="Min" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        <input type="number" step="0.01" value="${investmentFilterDraft.rateMax || ''}" onchange="window.actions.updateInvestmentFilter('rateMax', this.value)" placeholder="Max" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                    </div>
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Monto $</label>
+                                                    <div class="flex gap-2">
+                                                        <input type="number" step="0.01" value="${investmentFilterDraft.amountMin || ''}" onchange="window.actions.updateInvestmentFilter('amountMin', this.value)" placeholder="Min" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        <input type="number" step="0.01" value="${investmentFilterDraft.amountMax || ''}" onchange="window.actions.updateInvestmentFilter('amountMax', this.value)" placeholder="Max" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                    </div>
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Fecha de Vencimiento</label>
+                                                    <input type="date" value="${investmentFilterDraft.expiry || ''}" onchange="window.actions.updateInvestmentFilter('expiry', this.value)" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                </div>
+                                                <div class="space-y-1">
+                                                    <label class="text-xs font-bold text-zinc-500 uppercase">Estatus</label>
+                                                    <select onchange="window.actions.updateInvestmentFilter('status', this.value)" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                        <option value="" ${!investmentFilterDraft.status ? 'selected' : ''}>Todos</option>
+                                                        <option value="ACTIVO" ${investmentFilterDraft.status === 'ACTIVO' ? 'selected' : ''}>ACTIVO</option>
+                                                        <option value="VENCIDO" ${investmentFilterDraft.status === 'VENCIDO' ? 'selected' : ''}>VENCIDO</option>
+                                                        <option value="CANCELADO" ${investmentFilterDraft.status === 'CANCELADO' ? 'selected' : ''}>CANCELADO</option>
+                                                        <option value="PENDIENTE" ${investmentFilterDraft.status === 'PENDIENTE' ? 'selected' : ''}>PENDIENTE</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- Table -->
+                                        <div class="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                            <table class="w-full text-sm text-left">
+                                                <thead class="bg-black text-white uppercase text-xs font-bold">
+                                                    <tr>
+                                                        <th class="p-3">Fecha de Ejecución</th>
+                                                        <th class="p-3">Objetivo</th>
+                                                        <th class="p-3">Clasificación</th>
+                                                        <th class="p-3">Herramienta</th>
+                                                        <th class="p-3">Periodo</th>
+                                                        <th class="p-3">Tasa de Interés</th>
+                                                        <th class="p-3">Monto $</th>
+                                                        <th class="p-3">Fecha de Vencimiento</th>
+                                                        <th class="p-3">Estatus</th>
+                                                        <th class="p-3 w-24 text-right">Acciones</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody class="divide-y divide-zinc-200 dark:divide-zinc-800 text-zinc-700 dark:text-zinc-300">
+                                                    ${executedInvestments.length > 0 ? (filteredInvestments.length > 0 ? filteredInvestments.map(inv => `
+                                                        <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+                                                            <td class="p-3">${inv.date}</td>
+                                                            <td class="p-3">${inv.objective}</td>
+                                                            <td class="p-3">
+                                                                <span class="px-2 py-1 rounded text-xs font-bold 
+                                                                    ${inv.classification === 'RENTA FIJA' ? 'bg-blue-100 text-blue-800' :
+                        inv.classification === 'RENTA VARIABLE' ? 'bg-yellow-100 text-yellow-800' :
+                            inv.classification === 'ALTERNATIVO' ? 'bg-zinc-800 text-white' :
+                                'bg-brand-lime text-black'}">
+                                                                    ${inv.classification}
+                                                                </span>
+                                                            </td>
+                                                            <td class="p-3">${inv.tool}</td>
+                                                            <td class="p-3">${inv.period}</td>
+                                                            <td class="p-3">${inv.rate}%</td>
+                                                            <td class="p-3 font-bold text-zinc-900 dark:text-white">$${inv.amount.toLocaleString()}</td>
+                                                            <td class="p-3">${inv.expiry}</td>
+                                                            <td class="p-3">${inv.status}</td>
+                                                            <td class="p-3 text-right">
+                                                                ${!readOnly ? `
+                                                                <div class="flex items-center justify-end gap-2">
+                                                                    <button onclick="window.actions.openEditInvestmentModal(${inv.id})" class="text-blue-600 hover:text-blue-800" title="Editar movimiento">
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                                                                    </button>
+                                                                    <button onclick="window.actions.deleteInvestment(${inv.id})" class="text-red-500 hover:text-red-700" title="Eliminar movimiento">
+                                                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                                                    </button>
+                                                                </div>
+                                                                ` : ''}
+                                                            </td>
+                                                        </tr>
+                                                    `).join('') : `
+                                                        <tr>
+                                                            <td colspan="10" class="p-8 text-center text-zinc-400 italic">No hay inversiones que coincidan con los filtros actuales.</td>
+                                                        </tr>
+                                                    `) : `
+                                                        <tr>
+                                                            <td colspan="10" class="p-8 text-center text-zinc-400 italic">No hay inversiones registradas. Utiliza el formulario de arriba para agregar una.</td>
+                                                        </tr>
+                                                    `}
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        ${isEditInvestmentModalOpen && editingInvestment ? `
+                                            <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
+                                                <div class="w-full max-w-5xl rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl overflow-hidden">
+                                                    <div class="bg-blue-600 text-white px-5 py-3 flex items-center justify-between">
+                                                        <h4 class="font-black uppercase tracking-wide text-sm">Editar Movimiento</h4>
+                                                        <button onclick="window.actions.closeEditInvestmentModal()" class="p-1 rounded bg-white/10 hover:bg-white/20">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                                        </button>
+                                                    </div>
+                                                    <div class="p-5 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Fecha de EjecuciÃ³n</label>
+                                                            <input type="date" id="edit-inv-date" value="${editingInvestment.date || ''}" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Objetivo</label>
+                                                            <input type="text" id="edit-inv-objective" value="${editingInvestment.objective || ''}" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">ClasificaciÃ³n</label>
+                                                            <select id="edit-inv-classification" onchange="window.actions.updateToolOptions(this.value, 'edit-inv')" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                                <option value="RENTA FIJA" ${editClassification === 'RENTA FIJA' ? 'selected' : ''}>RENTA FIJA</option>
+                                                                <option value="RENTA VARIABLE" ${editClassification === 'RENTA VARIABLE' ? 'selected' : ''}>RENTA VARIABLE</option>
+                                                                <option value="ALTERNATIVO" ${editClassification === 'ALTERNATIVO' ? 'selected' : ''}>ALTERNATIVO</option>
+                                                                <option value="LIQUIDO" ${editClassification === 'LIQUIDO' ? 'selected' : ''}>LIQUIDO</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Herramienta</label>
+                                                            <select id="edit-inv-tool" onchange="window.actions.checkCustomTool(this.value, 'edit-inv')" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                                ${editToolOptions.map(opt => `<option value="${opt}" ${((!editToolIsCustom && editingInvestment.tool === opt) || (editToolIsCustom && opt === 'OTRO')) ? 'selected' : ''}>${opt}</option>`).join('')}
+                                                            </select>
+                                                            <div id="edit-inv-tool-custom-container" class="${editToolIsCustom ? '' : 'hidden'} mt-2">
+                                                                <input type="text" id="edit-inv-tool-custom" value="${editToolIsCustom ? (editingInvestment.tool || '') : ''}" placeholder="Especifique herramienta" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                            </div>
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Periodo</label>
+                                                            <input type="text" id="edit-inv-period" value="${editingInvestment.period || ''}" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Tasa de InterÃ©s (%)</label>
+                                                            <input type="number" step="0.01" id="edit-inv-rate" value="${editingInvestment.rate ?? 0}" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Monto $</label>
+                                                            <input type="number" step="0.01" id="edit-inv-amount" value="${editingInvestment.amount ?? 0}" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Fecha de Vencimiento</label>
+                                                            <input type="date" id="edit-inv-expiry" value="${editingInvestment.expiry || ''}" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm" />
+                                                        </div>
+                                                        <div class="space-y-1">
+                                                            <label class="text-xs font-bold text-zinc-500 uppercase">Estatus</label>
+                                                            <select id="edit-inv-status" class="w-full p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm">
+                                                                <option value="ACTIVO" ${editingInvestment.status === 'ACTIVO' ? 'selected' : ''}>ACTIVO</option>
+                                                                <option value="VENCIDO" ${editingInvestment.status === 'VENCIDO' ? 'selected' : ''}>VENCIDO</option>
+                                                                <option value="CANCELADO" ${editingInvestment.status === 'CANCELADO' ? 'selected' : ''}>CANCELADO</option>
+                                                                <option value="PENDIENTE" ${editingInvestment.status === 'PENDIENTE' ? 'selected' : ''}>PENDIENTE</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="flex items-end gap-2">
+                                                            <button onclick="window.actions.saveEditedInvestment()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded uppercase text-sm">Guardar</button>
+                                                            <button onclick="window.actions.closeEditInvestmentModal()" class="w-full bg-zinc-200 hover:bg-zinc-300 text-zinc-900 font-bold p-2 rounded uppercase text-sm">Cancelar</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                         ` : ''}
+
+                    <!-- Right Column: Projections Calculator -->
+                    <div class="space-y-4">
+                        <div class="bg-blue-500 text-white p-2 font-bold text-center uppercase text-sm flex justify-between items-center px-4">
+                            <span class="flex-grow text-center">CALCULADOR DE PROYECCIONES</span>
+                            ${!readOnly ? `
+                            <button onclick="window.actions.addProjection()" class="bg-white text-blue-600 hover:bg-blue-50 px-3 py-1 rounded text-xs font-bold transition-colors">
+                                + Nueva
+                            </button>
+                            ` : ''}
+                        </div>
+                        <div class="overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+                         ${(() => {
+                    // Ensure at least one projection exists
+                    if (investment.projections.length === 0) {
+                        window.actions.addProjection();
+                    }
+
+                    // Render ALL projections
+                    const projectionsList = investment.projections.map((p, i) => {
+                        const isExpanded = investment.expandedProjections && investment.expandedProjections.includes(p.id);
+
+                        // User-Defined Calculator Layout
+                        return `
+                            <div class="bg-white dark:bg-zinc-900 border-2 border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm overflow-hidden mb-4">
+                                <!-- Projection Header - Clickable to expand/collapse -->
+                                <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 cursor-pointer hover:from-blue-600 hover:to-blue-700 transition-all flex items-center justify-between" onclick="window.actions.toggleProjectionExpand ? window.actions.toggleProjectionExpand(${p.id}) : null">
+                                    <div class="flex items-center gap-2">
+                                        <svg class="w-5 h-5 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                        </svg>
+                                        <span class="font-bold">Calculadora #${i + 1}</span>
+                                    </div>
+                                    ${investment.projections.length > 1 && !readOnly ? `
+                                    <button onclick="event.stopPropagation(); window.actions.openDeleteConfirmation(${i})" class="bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-xs font-bold transition-colors flex items-center gap-1">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                        Eliminar
+                                    </button>
+                                    ` : ''}
+                                </div>
+                                
+                                ${isExpanded ? `
+                            <div class="flex flex-col gap-4 p-4">`
+                                : ''}
+                                ${isExpanded ? `
+                                <div class="p-0">
+                                    <div class="mb-4">
+                                        <h4 class="font-bold text-sm text-zinc-900 dark:text-white uppercase mb-1">El * indica que el campo es obligatorio</h4>
+                                        <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 1: Inversión inicial</div>
+                                        <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700">
+                                            <div class="mb-2">
+                                                <div class="font-bold text-blue-900 dark:text-blue-100">Inversión inicial *</div>
+                                                <div class="text-xs text-gray-600 dark:text-gray-400">Monto de dinero que tiene disponible para invertir inicialmente.</div>
+                                            </div>
+                                            <div class="flex items-center bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 h-10 px-2 rounded">
+                                                <span class="mr-2 text-gray-600 dark:text-gray-300 font-bold">$</span>
+                                                <input type="number" 
+                                                    value="${p.initial}" 
+                                                    onchange="window.actions.updateProjection(${i}, 'initial', this.value)"
+                                                    class="w-full text-left outline-none bg-transparent text-black dark:text-white font-bold h-full" ${readOnly ? 'disabled' : ''} />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-4">
+                                        <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 2: Contribución</div>
+                                        <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700 space-y-4">
+                                            <div>
+                                                <div class="mb-2">
+                                                    <div class="font-bold text-blue-900 dark:text-blue-100">Contribución mensual</div>
+                                                    <div class="text-xs text-gray-600 dark:text-gray-400">Monto que tiene previsto agregar al capital.</div>
+                                                </div>
+                                                <div class="flex items-center bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 h-10 px-2 rounded">
+                                                    <span class="mr-2 text-gray-600 dark:text-gray-300 font-bold">$</span>
+                                                    <input type="number" 
+                                                        value="${p.monthly}"
+                                                        onchange="window.actions.updateProjection(${i}, 'monthly', this.value)"
+                                                        class="w-full text-left outline-none bg-transparent text-black dark:text-white font-bold h-full" ${readOnly ? 'disabled' : ''} />
+                                                </div>
+                                            </div>
+                                            <div class="border-t border-blue-200 dark:border-zinc-600 pt-3">
+                                                <div class="mb-2">
+                                                    <div class="font-bold text-blue-900 dark:text-blue-100">Cantidad de tiempo en años *</div>
+                                                    <div class="text-xs text-gray-600 dark:text-gray-400">Cantidad de tiempo, en años, que tiene previsto ahorrar.</div>
+                                                </div>
+                                                 <input type="number" 
+                                                    value="${(p.days / 365)}"
+                                                    step="1"
+                                                    min="1"
+                                                    onchange="window.actions.updateProjection(${i}, 'days', Math.round(this.value) * 365)"
+                                                    class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold" ${readOnly ? 'disabled' : ''} />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-4">
+                                        <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 3: Tasa de interés</div>
+                                        <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700 space-y-4">
+                                            <div>
+                                                <div class="mb-2">
+                                                    <div class="font-bold text-blue-900 dark:text-blue-100">Tasa de interés estimada *</div>
+                                                    <div class="text-xs text-gray-600 dark:text-gray-400">Su tasa de interés anual estimada.</div>
+                                                </div>
+                                                <input type="number" step="0.01"
+                                                    value="${p.rate}"
+                                                    onchange="window.actions.updateProjection(${i}, 'rate', this.value)"
+                                                    class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold" ${readOnly ? 'disabled' : ''} />
+                                            </div>
+                                            <div class="border-t border-blue-200 dark:border-zinc-600 pt-3">
+                                                 <div class="mb-2">
+                                                    <div class="font-bold text-blue-900 dark:text-blue-100">Rango de varianza de las tasas de interés</div>
+                                                    <div class="text-xs text-gray-600 dark:text-gray-400">Rango de tasas de interés (por encima y por debajo de la tasa establecida anteriormente) para las cuales desea ver los resultados.</div>
+                                                </div>
+                                                <input type="number" step="0.01"
+                                                    value="${p.variance || 0}"
+                                                    onchange="window.actions.updateProjection(${i}, 'variance', this.value)"
+                                                    class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold" ${readOnly ? 'disabled' : ''} />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-4">
+                                         <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 4: Capitalización</div>
+                                          <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700">
+                                                <div class="mb-2">
+                                                    <div class="font-bold text-blue-900 dark:text-blue-100">Frecuencia de capitalización</div>
+                                                    <div class="text-xs text-gray-600 dark:text-gray-400">Cantidad de veces por año que se capitalizará el interés.</div>
+                                                </div>
+                                                 <select 
+                                                    onchange="window.actions.updateProjection(${i}, 'freq', this.value)"
+                                                    class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold text-sm" ${readOnly ? 'disabled' : ''}>
+                                                    <option value="ANUAL" ${p.freq === 'ANUAL' ? 'selected' : ''}>Anualmente</option>
+                                                    <option value="SEMESTRAL" ${p.freq === 'SEMESTRAL' ? 'selected' : ''}>Semestralmente</option>
+                                                    <option value="TRIMESTRAL" ${p.freq === 'TRIMESTRAL' ? 'selected' : ''}>Trimestralmente</option>
+                                                    <option value="MENSUAL" ${p.freq === 'MENSUAL' ? 'selected' : ''}>Mensualmente</option>
+                                                    <option value="DIARIO" ${p.freq === 'DIARIO' ? 'selected' : ''}>Diariamente</option>
+                                                 </select>
+                                          </div>
+                                    </div>
+
+                                    <div class="bg-gray-100 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 p-6 text-center rounded-xl shadow-inner mt-6">
+                                        <div class="text-gray-500 dark:text-gray-400 font-bold uppercase tracking-widest text-lg mb-2">Resultados</div>
+                                        <div class="text-xl text-gray-900 dark:text-white font-medium">
+                                            En <span class="font-bold text-blue-600 dark:text-blue-400">${(p.days / 365).toFixed(1)} años</span>, tendrá
+                                            <span class="block text-4xl mr-1 font-black text-blue-600 dark:text-blue-400 mt-2">
+                                                 $ ${(() => {
+                                    const r = p.rate / 100;
+                                    const year = parseFloat(p.days / 365) || 0;
+
+                                    if (p.freq === 'ANUAL') {
+                                        const total = p.initial + (p.monthly * 12 * year) + (p.initial * r * year);
+                                        return total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                    } else {
+                                        let n = 1;
+                                        if (p.freq === 'SEMESTRAL') n = 2;
+                                        if (p.freq === 'TRIMESTRAL') n = 4;
+                                        if (p.freq === 'MENSUAL') n = 12;
+                                        if (p.freq === 'DIARIO') n = 365;
+
+                                        const ratePerPeriod = r / n;
+                                        const periods = n * year;
+                                        const contribPerPeriod = (p.monthly * 12) / n;
+
+                                        const fvInitial = p.initial * Math.pow(1 + ratePerPeriod, periods);
+
+                                        let fvContribs = 0;
+                                        if (Math.abs(ratePerPeriod) > 0.00000001) {
+                                            fvContribs = contribPerPeriod * (Math.pow(1 + ratePerPeriod, periods) - 1) / ratePerPeriod;
+                                        } else {
+                                            fvContribs = contribPerPeriod * periods;
+                                        }
+                                        return (fvInitial + fvContribs).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                    }
+                                })()}
+                                            </span>
+                                        </div>
+                                         <div class="mt-4 pt-4 border-t border-gray-300 dark:border-zinc-600 flex flex-col items-center justify-center text-xs text-gray-500 dark:text-gray-400">
+                                            <span class="text-lg mb-1">Interés generado (aprox):</span>
+                                            <span class="font-bold text-2xl text-gray-800 dark:text-white">$ ${(() => {
+                                    const r = p.rate / 100;
+                                    const year = parseFloat(p.days / 365) || 0;
+                                    const totalInvested = p.initial + (p.monthly * 12 * year);
+
+                                    let totalFV = 0;
+
+                                    if (p.freq === 'ANUAL') {
+                                        totalFV = p.initial + (p.monthly * 12 * year) + (p.initial * r * year);
+                                    } else {
+                                        let n = 1;
+                                        if (p.freq === 'SEMESTRAL') n = 2;
+                                        if (p.freq === 'TRIMESTRAL') n = 4;
+                                        if (p.freq === 'MENSUAL') n = 12;
+                                        if (p.freq === 'DIARIO') n = 365;
+
+                                        const ratePerPeriod = r / n;
+                                        const periods = n * year;
+                                        const contribPerPeriod = (p.monthly * 12) / n;
+
+                                        const fvInitial = p.initial * Math.pow(1 + ratePerPeriod, periods);
+
+                                        let fvContribs = 0;
+                                        if (Math.abs(ratePerPeriod) > 0.00000001) {
+                                            fvContribs = contribPerPeriod * (Math.pow(1 + ratePerPeriod, periods) - 1) / ratePerPeriod;
+                                        } else {
+                                            fvContribs = contribPerPeriod * periods;
+                                        }
+
+                                        totalFV = fvInitial + fvContribs;
+                                    }
+
+                                    return (totalFV - totalInvested).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                })()}</span>
+                                        </div>
+                                        <button onclick="window.actions.showProjectionChart(${i})" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-colors">
+                                            VER GRÁFICO
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Chart Modal -->
+                            ${activeChartProjectionIndex === i ? `
+                            <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+                                <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-4xl p-6 relative">
+                                    <button onclick="window.actions.closeProjectionChart()" class="absolute top-4 right-4 text-zinc-500 hover:text-black dark:hover:text-white">
+                                        <i data-lucide="x" class="w-6 h-6"></i>
+                                    </button>
+                                    <div class="mb-4">
+                                        <h3 class="text-xl font-bold text-zinc-900 dark:text-white">Proyección de Ahorro</h3>
+                                        <p class="text-zinc-500 dark:text-zinc-400 text-sm">Visualización de crecimiento con varianza de tasas</p>
+                                    </div>
+                                    <div class="w-full h-96">
+                                        <canvas id="projectionChart"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                            ` : ''}
+                                ` : ''}
+                            </div>
+                            `;
+                    }).join(''); // Close map and join all projections
+
+                    const summaryPanel = investment.projections.length > 0 ? `
+                        <div class="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl shadow-lg p-5 border-2 border-emerald-400 mt-6">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                                </svg>
+                                <h3 class="text-lg font-black uppercase tracking-wide">Resumen Total</h3>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="bg-white/10 backdrop-blur-sm rounded-lg p-3">
+                                    <div class="text-xs font-semibold text-white/80 mb-1">Total Resultados</div>
+                                    <div class="text-2xl font-black">$${(() => {
+                            const total = investment.projections.reduce((sum, p) => {
+                                return sum + (calculateProjectionResult(p) || 0);
+                            }, 0);
+                            return total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        })()}</div>
+                                </div>
+                                <div class="bg-white/10 backdrop-blur-sm rounded-lg p-3">
+                                    <div class="text-xs font-semibold text-white/80 mb-1">Total Interés Generado</div>
+                                    <div class="text-2xl font-black">$${(() => {
+                            const total = investment.projections.reduce((sum, p) => {
+                                return sum + (calculateProjectionInterest(p) || 0);
+                            }, 0);
+                            return total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        })()}</div>
+                                </div>
+                            </div>
+                        </div>
+                        ` : '';
+
+                    return projectionsList + summaryPanel;
+                })()}
+                        </div >
+                    </div >
+                 </div >
+            </div >
+    `;
+        };
+
+        // const readOnly = isPortfolioReadOnly(); // Moved to top of render
+        const contentClass = ''; // Removed pointer-events-none to allow interactions (expanding) while disabling inputs
+
+        return `
+    <div class="min-h-screen bg-gray-50 dark:bg-brand-black p-4 md:p-8 ${animateClass} pb-20">
+            <!-- Header -->
+            <div class="flex items-center justify-between gap-4 mb-8">
+                <div class="flex items-center gap-4">
+                    <button onclick="window.actions.backToDashboard()" class="bg-white dark:bg-zinc-900 p-2 rounded-full border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors shadow-sm">
+                        <i data-lucide="arrow-left" width="24"></i>
+                    </button>
+                    <div>
+                        <h1 class="text-3xl font-black text-brand-lime mt-1">Portafolio</h1>
+                        <p class="text-zinc-500 dark:text-zinc-400">${currentView === 'initial' ? 'Levantamiento Inicial y Plan de Ahorro' : 'Portafolio de Inversión (Proyección)'}</p>
+                    </div>
+                </div>
+                
+                <!-- Toggle Button -->
+                <div class="flex bg-white dark:bg-zinc-900 rounded-full p-1 border border-zinc-200 dark:border-zinc-800 shadow-sm relative">
+                     <button onclick="window.actions.setPortfolioView('initial')" 
+                        style="display:none;"
+                        class="px-4 py-2 rounded-full text-sm font-bold transition-all z-10 ${currentView === 'initial' ? 'bg-brand-lime text-black shadow-sm' : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'}">
+                        LEVANTAMIENTO
+                    </button>
+                    <button onclick="window.actions.setPortfolioView('investment')" 
+                        class="px-4 py-2 rounded-full text-sm font-bold transition-all z-10 ${currentView === 'investment' ? 'bg-brand-lime text-black shadow-sm' : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'}">
+                        PORTAFOLIO DE INVERSIÓN
+                    </button>
+                </div>
+            </div>
+            <!--Content -->
+            <div class="${contentClass}">
+    ${currentView === 'initial' ? renderInitialView() : renderInvestmentView()}
+            </div>
+        </div>
+            
+            <!-- Delete Confirmation Modal -->
+            ${state.portfolio.deleteConfirmation.isOpen ? `
+            <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+                <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-md p-6 relative border border-zinc-200 dark:border-zinc-800">
+                    <div class="mb-6 text-center">
+                        <div class="mx-auto w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mb-4">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-red-600 dark:text-red-500"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                        </div>
+                        <h3 class="text-xl font-bold text-zinc-900 dark:text-white mb-2">¿Eliminar esta calculadora?</h3>
+                        <p class="text-zinc-500 dark:text-zinc-400 text-sm">Esta acción no se puede deshacer. Se perderán todos los datos de esta proyección.</p>
+                    </div>
+                    <div class="flex gap-3">
+                         <button onclick="window.actions.closeDeleteConfirmation()" class="flex-1 px-4 py-2 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-900 dark:text-white rounded-xl font-bold transition-colors">
+                            Cancelar
+                        </button>
+                        <button onclick="window.actions.confirmDeleteProjection()" class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-colors">
+                            Eliminar
+                        </button>
+                    </div>
+                </div>
+            </div>
+            ` : ''}
+        `;
+    }
+};

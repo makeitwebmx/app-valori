@@ -1,0 +1,208 @@
+// New rendering section for CALCULADOR DE PROYECCIONES
+// This replaces lines 987-1196 in Portfolio.js
+
+`
+                    <!-- Right Column: Projections Calculator -->
+                    <div class="space-y-4">
+                        <div class="bg-blue-500 text-white p-2 font-bold text-center uppercase text-sm flex justify-between items-center">
+                            <span class="flex-grow text-center">CALCULADOR DE PROYECCIONES</span>
+                            <button onclick="window.actions.addProjection()" class="bg-white text-blue-600 hover:bg-blue-50 px-3 py-1 rounded text-xs font-bold transition-colors">
+                                + Nueva
+                            </button>
+                        </div>
+                        
+                        <div class="overflow-y-auto space-y-3 pr-2 custom-scrollbar max-h-[calc(100vh-200px)]">
+                            ${investment.projections.map((p, i) => {
+                                const isExpanded = investment.expandedProjections.includes(p.id);
+                                const result = window.calculateProjectionResult ? window.calculateProjectionResult(p) : 0;
+                                const interest = window.calculateProjectionInterest ? window.calculateProjectionInterest(p) : 0;
+                                
+                                return `
+                                <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm overflow-hidden">
+                                    <!-- Projection Header -->
+                                    <div class="bg-gradient-to-r from-blue-500 to-blue-600 text-white p-3 cursor-pointer hover:from-blue-600 hover:to-blue-700 transition-all duration-200" onclick="window.actions.toggleProjectionExpand(${p.id})">
+                                        <div class="flex items-center justify-between">
+                                            <div class="flex items-center gap-2">
+                                                <svg class="w-5 h-5 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                                </svg>
+                                                <span class="font-bold text-sm">Proyección #${i + 1}</span>
+                                            </div>
+                                            <button onclick="event.stopPropagation(); if(confirm('¿Eliminar esta proyección?')) window.actions.removeProjection(${i})" class="bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-xs font-bold transition-colors">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Projection Summary (Always Visible) -->
+                                    <div class="bg-blue-50 dark:bg-zinc-800/50 p-3 grid grid-cols-2 gap-2 border-b border-zinc-200 dark:border-zinc-700">
+                                        <div>
+                                            <div class="text-xs text-zinc-600 dark:text-zinc-400 mb-1">Resultado Final</div>
+                                            <div class="text-lg font-bold text-blue-600 dark:text-blue-400">$${result.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                        </div>
+                                        <div>
+                                            <div class="text-xs text-zinc-600 dark:text-zinc-400 mb-1">Interés Generado</div>
+                                            <div class="text-lg font-bold text-green-600 dark:text-green-400">$${interest.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Projection Details (Expandable) -->
+                                    ${isExpanded ? `
+                                    <div class="p-4 animate-fade-in">
+                                        <div class="space-y-4">
+                                            <div class="mb-4">
+                                                <h4 class="font-bold text-sm text-zinc-900 dark:text-white uppercase mb-1">El * indica que el campo es obligatorio</h4>
+                                                <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 1: Inversión inicial</div>
+                                                <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700">
+                                                    <div class="mb-2">
+                                                        <div class="font-bold text-blue-900 dark:text-blue-100">Inversión inicial *</div>
+                                                        <div class="text-xs text-gray-600 dark:text-gray-400">Monto de dinero que tiene disponible para invertir inicialmente.</div>
+                                                    </div>
+                                                    <div class="flex items-center bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 h-10 px-2 rounded">
+                                                        <span class="mr-2 text-gray-600 dark:text-gray-300 font-bold">$</span>
+                                                        <input type="number" 
+                                                            value="${p.initial}" 
+                                                            onchange="window.actions.updateProjection(${i}, 'initial', this.value)"
+                                                            class="w-full text-left outline-none bg-transparent text-black dark:text-white font-bold h-full" />
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="mb-4">
+                                                <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 2: Contribución</div>
+                                                <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700 space-y-4">
+                                                    <div>
+                                                        <div class="mb-2">
+                                                            <div class="font-bold text-blue-900 dark:text-blue-100">Contribución mensual</div>
+                                                            <div class="text-xs text-gray-600 dark:text-gray-400">Monto que tiene previsto agregar al capital.</div>
+                                                        </div>
+                                                        <div class="flex items-center bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 h-10 px-2 rounded">
+                                                            <span class="mr-2 text-gray-600 dark:text-gray-300 font-bold">$</span>
+                                                            <input type="number" 
+                                                                value="${p.monthly}"
+                                                                onchange="window.actions.updateProjection(${i}, 'monthly', this.value)"
+                                                                class="w-full text-left outline-none bg-transparent text-black dark:text-white font-bold h-full" />
+                                                        </div>
+                                                    </div>
+                                                    <div class="border-t border-blue-200 dark:border-zinc-600 pt-3">
+                                                        <div class="mb-2">
+                                                            <div class="font-bold text-blue-900 dark:text-blue-100">Cantidad de tiempo en años *</div>
+                                                            <div class="text-xs text-gray-600 dark:text-gray-400">Cantidad de tiempo, en años, que tiene previsto ahorrar.</div>
+                                                        </div>
+                                                        <input type="number" 
+                                                            value="${(p.days / 365)}"
+                                                            step="1"
+                                                            min="1"
+                                                            onchange="window.actions.updateProjection(${i}, 'days', Math.round(this.value) * 365)"
+                                                            class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold" />
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="mb-4">
+                                                <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 3: Tasa de interés</div>
+                                                <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700 space-y-4">
+                                                    <div>
+                                                        <div class="mb-2">
+                                                            <div class="font-bold text-blue-900 dark:text-blue-100">Tasa de interés estimada *</div>
+                                                            <div class="text-xs text-gray-600 dark:text-gray-400">Su tasa de interés anual estimada.</div>
+                                                        </div>
+                                                        <input type="number" step="0.01"
+                                                            value="${p.rate}"
+                                                            onchange="window.actions.updateProjection(${i}, 'rate', this.value)"
+                                                            class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold" />
+                                                    </div>
+                                                    <div class="border-t border-blue-200 dark:border-zinc-600 pt-3">
+                                                        <div class="mb-2">
+                                                            <div class="font-bold text-blue-900 dark:text-blue-100">Rango de varianza de las tasas de interés</div>
+                                                            <div class="text-xs text-gray-600 dark:text-gray-400">Rango de tasas de interés (por encima y por debajo de la tasa establecida anteriormente) para las cuales desea ver los resultados.</div>
+                                                        </div>
+                                                        <input type="number" step="0.01"
+                                                            value="${p.variance || 0}"
+                                                            onchange="window.actions.updateProjection(${i}, 'variance', this.value)"
+                                                            class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold" />
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="mb-4">
+                                                <div class="bg-blue-600 text-white p-2 font-bold text-sm uppercase">Paso 4: Capitalización</div>
+                                                <div class="bg-blue-50 dark:bg-zinc-800 p-4 border border-blue-100 dark:border-zinc-700">
+                                                    <div class="mb-2">
+                                                        <div class="font-bold text-blue-900 dark:text-blue-100">Frecuencia de capitalización</div>
+                                                        <div class="text-xs text-gray-600 dark:text-gray-400">Cantidad de veces por año que se capitalizará el interés.</div>
+                                                    </div>
+                                                    <select 
+                                                        onchange="window.actions.updateProjection(${i}, 'freq', this.value)"
+                                                        class="w-full h-10 bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded text-left px-2 outline-none text-black dark:text-white font-bold text-sm">
+                                                        <option value="ANUAL" ${p.freq === 'ANUAL' ? 'selected' : ''}>Anualmente</option>
+                                                        <option value="SEMESTRAL" ${p.freq === 'SEMESTRAL' ? 'selected' : ''}>Semestralmente</option>
+                                                        <option value="TRIMESTRAL" ${p.freq === 'TRIMESTRAL' ? 'selected' : ''}>Trimestralmente</option>
+                                                        <option value="MENSUAL" ${p.freq === 'MENSUAL' ? 'selected' : ''}>Mensualmente</option>
+                                                        <option value="DIARIO" ${p.freq === 'DIARIO' ? 'selected' : ''}>Diariamente</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+
+                                            <button onclick="window.actions.showProjectionChart(${i})" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-colors">
+                                                VER GRÁFICO
+                                            </button>
+                                        </div>
+                                    </div>
+                                    ` : ''}
+                                    
+                                    <!-- Chart Modal -->
+                                    ${activeChartProjectionIndex === i ? `
+                                    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+                                        <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-4xl p-6 relative">
+                                            <button onclick="window.actions.closeProjectionChart()" class="absolute top-4 right-4 text-zinc-500 hover:text-black dark:hover:text-white">
+                                                <i data-lucide="x" class="w-6 h-6"></i>
+                                            </button>
+                                            <div class="mb-4">
+                                                <h3 class="text-xl font-bold text-zinc-900 dark:text-white">Proyección de Ahorro #${i + 1}</h3>
+                                                <p class="text-zinc-500 dark:text-zinc-400 text-sm">Visualización de crecimiento con varianza de tasas</p>
+                                            </div>
+                                            <div class="w-full h-96">
+                                                <canvas id="projectionChart"></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    ` : ''}
+                                </div>
+                                `;
+                            }).join('')}
+                            
+                            <!-- Total Summary Panel -->
+                            ${investment.projections.length > 0 ? `
+                            <div class="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-xl shadow-lg p-5 border-2 border-emerald-400 mt-6">
+                                <div class="flex items-center gap-2 mb-3">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                                    </svg>
+                                    <h3 class="text-lg font-black uppercase tracking-wide">Resumen Total</h3>
+                                </div>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div class="bg-white/10 backdrop-blur-sm rounded-lg p-3">
+                                        <div class="text-xs font-semibold text-white/80 mb-1">Total Resultados</div>
+                                        <div class="text-2xl font-black">$${(() => {
+                                            return investment.projections.reduce((sum, p) => {
+                                                return sum + (window.calculateProjectionResult ? window.calculateProjectionResult(p) : 0);
+                                            }, 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                        })()}</div>
+                                    </div>
+                                    <div class="bg-white/10 backdrop-blur-sm rounded-lg p-3">
+                                        <div class="text-xs font-semibold text-white/80 mb-1">Total Interés Generado</div>
+                                        <div class="text-2xl font-black">$${(() => {
+                                            return investment.projections.reduce((sum, p) => {
+                                               return sum + (window.calculateProjectionInterest ? window.calculateProjectionInterest(p) : 0);
+                                            }, 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                        })()}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+`

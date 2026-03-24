@@ -1,0 +1,381 @@
+import { state, updateUI } from '../store.js';
+import { formatCurrency } from './Utils.js';
+import { calculateProjectionResult, calculateProjectionInterest } from './ProjectionHelpers.js';
+
+window.actions = window.actions || {};
+
+window.actions.updatePortfolioOther = (index, value) => {
+    state.portfolio.others[index].value = parseFloat(value) || 0;
+    updateUI();
+};
+
+window.actions.updatePortfolioExpense = (yearKey, index, value) => {
+    state.portfolio[yearKey][index].value = parseFloat(value) || 0;
+    updateUI();
+};
+
+window.actions.updatePortfolioGoalAmount = (index, value) => {
+    state.portfolio.savingsPlan.goals[index].amount = parseFloat(value) || 0;
+    updateUI();
+};
+
+window.actions.updatePortfolioGoalMonths = (index, value) => {
+    state.portfolio.savingsPlan.goals[index].months = parseFloat(value) || 0;
+    updateUI();
+};
+
+window.actions.updatePortfolioMonthData = (monthIndex, goalIndex, value) => {
+    state.portfolio.savingsPlan.monthlyData[monthIndex][goalIndex] = parseFloat(value) || 0;
+    updateUI();
+};
+
+window.actions.setPortfolioView = (viewName) => {
+    console.log('setPortfolioView called with:', viewName);
+    console.log('Current state.view:', state.view);
+    state.portfolio.currentView = viewName;
+    console.log('Updated state.portfolio.currentView to:', state.portfolio.currentView);
+    updateUI();
+};
+
+window.actions.updateInvestmentAmount = (value) => {
+    state.portfolio.investment.amount = parseFloat(value) || 0;
+    // Recalculate distribution based on percentages
+    const amount = state.portfolio.investment.amount;
+    const dist = state.portfolio.investment.distribution;
+    dist.fixed.amount = amount * (dist.fixed.percent / 100);
+    dist.alternative.amount = amount * (dist.alternative.percent / 100);
+    dist.liquid.amount = amount * (dist.liquid.percent / 100);
+    dist.variable.amount = amount * (dist.variable.percent / 100);
+    console.log('Updated investment amount:', amount, dist);
+    updateUI();
+};
+
+window.actions.updateInvestmentType = (value) => {
+    state.portfolio.investment.type = value;
+    const dist = state.portfolio.investment.distribution;
+
+    // Define profiles
+    let profiles = {
+        'CONSERVADOR': { fixed: 50, alternative: 10, liquid: 20, variable: 20 },
+        'MODERADO': { fixed: 40, alternative: 20, liquid: 10, variable: 30 },
+        'ARRIESGADO': { fixed: 25, alternative: 40, liquid: 5, variable: 30 } // Default match
+    };
+
+    const p = profiles[value] || profiles['ARRIESGADO'];
+
+    dist.fixed.percent = p.fixed;
+    dist.alternative.percent = p.alternative;
+    dist.liquid.percent = p.liquid;
+    dist.variable.percent = p.variable;
+
+    // Trigger amount recalculation
+    console.log('Updated investment type:', value);
+    window.actions.updateInvestmentAmount(state.portfolio.investment.amount);
+};
+
+window.actions.toggleProjectionExpand = (id) => {
+    const expanded = state.portfolio.investment.expandedProjections || [];
+    const index = expanded.indexOf(id);
+    if (index === -1) {
+        expanded.push(id);
+    } else {
+        expanded.splice(index, 1);
+    }
+    state.portfolio.investment.expandedProjections = expanded;
+    updateUI();
+};
+
+window.actions.addProjection = () => {
+    state.portfolio.investment.projections.push({
+        id: Date.now(), // simple unique id
+        initial: 10000,
+        monthly: 500,
+        days: 365,
+        rate: 10,
+        variance: 17,
+        freq: 'ANUAL'
+    });
+    updateUI();
+};
+
+window.actions.removeProjection = (index) => {
+    state.portfolio.investment.projections.splice(index, 1);
+    updateUI();
+};
+
+window.actions.updateProjection = (index, field, value) => {
+    const proj = state.portfolio.investment.projections[index];
+    if (!proj) return;
+    if (field === 'freq') {
+        proj[field] = value;
+    } else if (field === 'rate' || field === 'variance') {
+        proj[field] = parseFloat(value);
+    } else if (field === 'days') {
+        proj[field] = parseFloat(value) || 0;
+    } else {
+        proj[field] = parseFloat(value) || 0;
+    }
+    updateUI();
+};
+
+window.actions.showProjectionChart = (index) => {
+    state.portfolio.activeChartProjectionIndex = index;
+    updateUI();
+    setTimeout(() => {
+        const ctx = document.getElementById('projectionChart');
+        if (ctx) {
+            const proj = state.portfolio.investment.projections[index];
+            const years = Math.round(proj.days / 365);
+            const labels = Array.from({ length: years + 1 }, (_, i) => `Año ${i}`);
+
+            const calcData = (rate) => {
+                return labels.map((_, year) => {
+                    const r = rate / 100;
+                    const monthlyContrib = proj.monthly;
+                    const initial = proj.initial;
+
+                    if (proj.freq === 'ANUAL') {
+                        return initial + (monthlyContrib * 12 * year) + (initial * r * year);
+                    } else {
+                        let n = 1;
+                        if (proj.freq === 'SEMESTRAL') n = 2;
+                        if (proj.freq === 'TRIMESTRAL') n = 4;
+                        if (proj.freq === 'MENSUAL') n = 12;
+                        if (proj.freq === 'DIARIO') n = 365;
+
+                        const ratePerPeriod = r / n;
+                        const periods = n * year;
+                        const contribPerPeriod = (monthlyContrib * 12) / n;
+
+                        const fvInitial = initial * Math.pow(1 + ratePerPeriod, periods);
+                        let fvContribs = 0;
+                        if (Math.abs(ratePerPeriod) > 0.00000001) {
+                            fvContribs = contribPerPeriod * (Math.pow(1 + ratePerPeriod, periods) - 1) / ratePerPeriod;
+                        } else {
+                            fvContribs = contribPerPeriod * periods;
+                        }
+
+                        return fvInitial + fvContribs;
+                    }
+                });
+            };
+
+            const baseRate = proj.rate;
+            const variance = proj.variance || 0;
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: `Varianza superior (${(baseRate + variance).toFixed(2)}%)`,
+                            data: calcData(baseRate + variance),
+                            borderColor: '#1e3a8a',
+                            backgroundColor: '#1e3a8a',
+                            borderWidth: 2,
+                            pointRadius: 4
+                        },
+                        {
+                            label: `Valor futuro (${baseRate.toFixed(2)}%)`,
+                            data: calcData(baseRate),
+                            borderColor: '#dc2626',
+                            backgroundColor: '#dc2626',
+                            borderWidth: 2,
+                            pointRadius: 4
+                        },
+                        {
+                            label: `Varianza inferior (${(baseRate - variance).toFixed(2)}%)`,
+                            data: calcData(baseRate - variance),
+                            borderColor: '#14b8a6',
+                            backgroundColor: '#14b8a6',
+                            borderWidth: 2,
+                            pointRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        title: { display: true, text: 'Ahorros totales', font: { size: 16 } }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: { callback: function (value) { return '$' + value.toLocaleString(); } }
+                        }
+                    }
+                }
+            });
+        }
+    }, 100);
+};
+
+window.actions.closeProjectionChart = () => {
+    state.portfolio.activeChartProjectionIndex = null;
+    updateUI();
+};
+
+window.actions.updateInvestmentObjective = (index, field, value) => {
+    const obj = state.portfolio.investment.objectives[index];
+    if (!obj) return;
+    if (field === 'concept') {
+        obj.concept = value;
+    } else {
+        obj[field] = parseFloat(value) || 0;
+    }
+    updateUI();
+};
+
+window.actions.updateRealDistributionAmount = (key, value) => {
+    const dist = state.portfolio.investment.realDistribution;
+    if (!dist[key]) return;
+    dist[key].amount = parseFloat(value) || 0;
+    const total = dist.fixed.amount + dist.alternative.amount + dist.liquid.amount + dist.variable.amount;
+    if (total > 0) {
+        dist.fixed.percent = parseFloat(((dist.fixed.amount / total) * 100).toFixed(1));
+        dist.alternative.percent = parseFloat(((dist.alternative.amount / total) * 100).toFixed(1));
+        dist.liquid.percent = parseFloat(((dist.liquid.amount / total) * 100).toFixed(1));
+        const sumOthers = dist.fixed.percent + dist.alternative.percent + dist.liquid.percent;
+        dist.variable.percent = parseFloat((100 - sumOthers).toFixed(1));
+    } else {
+        dist.fixed.percent = 0;
+        dist.alternative.percent = 0;
+        dist.liquid.percent = 0;
+        dist.variable.percent = 0;
+    }
+    updateUI();
+};
+
+window.actions.toggleInvestmentModal = (isOpen) => {
+    state.portfolio.isInvestmentModalOpen = isOpen;
+    updateUI();
+};
+
+window.actions.addInvestment = () => {
+    const getVal = (id) => document.getElementById(id).value;
+    const newInv = {
+        id: Date.now(),
+        date: getVal('inv-date'),
+        objective: getVal('inv-objective'),
+        classification: getVal('inv-classification'),
+        tool: getVal('inv-tool'),
+        period: getVal('inv-period'),
+        rate: parseFloat(getVal('inv-rate')) || 0,
+        amount: parseFloat(getVal('inv-amount')) || 0,
+        expiry: getVal('inv-expiry'),
+        status: getVal('inv-status')
+    };
+
+    if (!newInv.amount || !newInv.classification) {
+        alert('Por favor ingrese al menos la clasificación y el monto.');
+        return;
+    }
+
+    state.portfolio.investment.executedInvestments.push(newInv);
+    const dist = state.portfolio.investment.realDistribution;
+    const invs = state.portfolio.investment.executedInvestments;
+
+    dist.fixed.amount = 0;
+    dist.alternative.amount = 0;
+    dist.liquid.amount = 0;
+    dist.variable.amount = 0;
+
+    invs.forEach(inv => {
+        if (inv.classification === 'RENTA FIJA') dist.fixed.amount += inv.amount;
+        if (inv.classification === 'ALTERNATIVO') dist.alternative.amount += inv.amount;
+        if (inv.classification === 'LIQUIDO') dist.liquid.amount += inv.amount;
+        if (inv.classification === 'RENTA VARIABLE') dist.variable.amount += inv.amount;
+    });
+
+    const total = dist.fixed.amount + dist.alternative.amount + dist.liquid.amount + dist.variable.amount;
+    if (total > 0) {
+        dist.fixed.percent = parseFloat(((dist.fixed.amount / total) * 100).toFixed(1));
+        dist.alternative.percent = parseFloat(((dist.alternative.amount / total) * 100).toFixed(1));
+        dist.liquid.percent = parseFloat(((dist.liquid.amount / total) * 100).toFixed(1));
+        const sumOthers = dist.fixed.percent + dist.alternative.percent + dist.liquid.percent;
+        dist.variable.percent = parseFloat((100 - sumOthers).toFixed(1));
+    } else {
+        dist.fixed.percent = 0;
+        dist.alternative.percent = 0;
+        dist.liquid.percent = 0;
+        dist.variable.percent = 0;
+    }
+    updateUI();
+    ['inv-date', 'inv-objective', 'inv-tool', 'inv-period', 'inv-rate', 'inv-amount', 'inv-expiry', 'inv-status'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+};
+
+window.actions.deleteInvestment = (id) => {
+    state.portfolio.investment.executedInvestments = state.portfolio.investment.executedInvestments.filter(i => i.id !== id);
+    const dist = state.portfolio.investment.realDistribution;
+    const invs = state.portfolio.investment.executedInvestments;
+
+    dist.fixed.amount = 0;
+    dist.alternative.amount = 0;
+    dist.liquid.amount = 0;
+    dist.variable.amount = 0;
+
+    invs.forEach(inv => {
+        if (inv.classification === 'RENTA FIJA') dist.fixed.amount += inv.amount;
+        if (inv.classification === 'ALTERNATIVO') dist.alternative.amount += inv.amount;
+        if (inv.classification === 'LIQUIDO') dist.liquid.amount += inv.amount;
+        if (inv.classification === 'RENTA VARIABLE') dist.variable.amount += inv.amount;
+    });
+
+    const total = dist.fixed.amount + dist.alternative.amount + dist.liquid.amount + dist.variable.amount;
+    if (total > 0) {
+        dist.fixed.percent = parseFloat(((dist.fixed.amount / total) * 100).toFixed(1));
+        dist.alternative.percent = parseFloat(((dist.alternative.amount / total) * 100).toFixed(1));
+        dist.liquid.percent = parseFloat(((dist.liquid.amount / total) * 100).toFixed(1));
+        const sumOthers = dist.fixed.percent + dist.alternative.percent + dist.liquid.percent;
+        dist.variable.percent = parseFloat((100 - sumOthers).toFixed(1));
+    } else {
+        dist.fixed.percent = 0;
+        dist.alternative.percent = 0;
+        dist.liquid.percent = 0;
+        dist.variable.percent = 0;
+    }
+    updateUI();
+};
+
+const toolOptions = {
+    'RENTA FIJA': ['BONOS', 'CETES', 'UDIBONOS', 'NU', 'KLAR', 'STORI', 'KUBOFINANCIERO', 'FINSUS', 'FONDEADORA', 'DINN', 'SUPERTASAS', 'COVALTO', 'OTRO'],
+    'RENTA VARIABLE': ['ACCIONES', 'ETF\'s', 'NEGOCIO PROPIO', 'PPR GNP', 'ÍNDICES', 'FONDOS MUTUOS', 'AFORE SURA', 'FIBRAS', 'FOREX', 'FUTUROS', 'PLAN PERSONAL DE RETIRO', 'MATERIAS PRIMAS', 'COMMODITIES', 'OptiMaxx elite', 'OTRO'],
+    'LIQUIDO': ['BONDDIA', 'NU', 'KLAR', 'UALA', 'CUENTA BANCARIA', 'PAGARÉS', 'CUENTAS DE AHORRO', 'OTRO'],
+    'ALTERNATIVO': ['BIENES RAÍCES', 'FONDOS PRIVADOS', 'CROWDFUNDING', 'METALES', 'CRIPTOMONEDAS', 'COLECCIONABLES', 'YO TE PRESTO', '100 LADRILLOS', 'OTRO']
+};
+
+window.actions.updateToolOptions = (classification) => {
+    const toolSelect = document.getElementById('inv-tool');
+    if (!toolSelect) return;
+    const options = toolOptions[classification] || [];
+    toolSelect.innerHTML = options.map(opt => `<option value="${opt}">${opt}</option>`).join('');
+};
+
+export const Portfolio = {
+    render: () => {
+        const { others, liquid, expenses2026, expenses2027, savingsPlan, currentView, investment, activeChartProjectionIndex, isInvestmentModalOpen } = state.portfolio;
+        console.log('Portfolio.render called. currentView:', currentView);
+
+        const fmt = (val) => window.formatCurrency ? window.formatCurrency(val) : (val).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+        const totalOtros = others.reduce((sum, item) => sum + item.value, 0);
+        const totalLiquid = liquid;
+        const total2026 = expenses2026.reduce((sum, item) => sum + item.value, 0);
+        const total2027 = expenses2027.reduce((sum, item) => sum + item.value, 0);
+        const totalComprometido = total2026 + total2027;
+        const totalDisponibles = -totalComprometido;
+        const totalAhorroMensual = savingsPlan.goals.reduce((sum, goal) => sum + goal.amount, 0);
+
+        const footerTotals = [0, 0, 0, 0];
+        savingsPlan.monthlyData.forEach(row => {
+            row.forEach((val, idx) => {
+                if (idx < 4) footerTotals[idx] += val;
+            });
+        });
+
+        const renderPlanAhorroRows = () => {

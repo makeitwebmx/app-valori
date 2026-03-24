@@ -1,0 +1,265 @@
+            const months = [
+                'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+                'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+            ];
+            return months.map((month, i) => {
+                const row = savingsPlan.monthlyData[i];
+                const rowTotal = row.reduce((a, b) => a + b, 0);
+                return `
+                <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors">
+                    <td class="p-3 font-medium text-zinc-900 dark:text-white border-r border-zinc-100 dark:border-zinc-800">${month.toUpperCase()}</td>
+                    ${row.map((val, colIndex) => `
+                        <td class="p-0 border-r border-zinc-100 dark:border-zinc-800 relative group">
+                            <input type="number" value="${val}"
+                                onchange="window.actions.updatePortfolioMonthData(${i}, ${colIndex}, this.value)"
+                                class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-lime focus:bg-white dark:focus:bg-zinc-800 outline-none text-zinc-600 dark:text-zinc-400 group-hover:bg-zinc-50 dark:group-hover:bg-zinc-800/50 transition-colors"
+                            />
+                        </td>
+                    `).join('')}
+                    <td class="p-3 text-right font-bold text-zinc-900 bg-zinc-900 text-white border-l border-zinc-800">${formatCurrency(rowTotal)}</td>
+                </tr>`;
+            }).join('');
+        };
+
+        const renderInitialView = () => `
+            <div class="space-y-8 max-w-7xl mx-auto animate-fade-in">
+                <!-- LEVANTAMIENTO INICIAL -->
+                <div class="bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+                    <div class="bg-brand-lime p-4 text-center">
+                        <h2 class="text-xl font-black text-zinc-900 uppercase tracking-wide">Levantamiento Inicial</h2>
+                    </div>
+                    <div class="p-6 grid lg:grid-cols-2 gap-8">
+                        <!-- Left Column: Cantidad Total de Ahorro -->
+                        <div class="space-y-6">
+                            <div class="overflow-hidden rounded-xl border border-blue-200 dark:border-blue-900/30">
+                                <div class="bg-brand-blue p-3 text-white font-bold text-center uppercase text-sm tracking-wider">Cantidad Total de Ahorro</div>
+                                <table class="w-full text-sm">
+                                    <tbody class="divide-y divide-blue-50 dark:divide-blue-900/10">
+                                        ${others.map((item, index) => `
+                                        <tr class="${index % 2 === 0 ? 'bg-blue-50/50 dark:bg-blue-900/5' : 'bg-white dark:bg-zinc-900'}">
+                                            <td class="p-3 font-medium text-zinc-700 dark:text-zinc-300">${item.label}</td>
+                                            <td class="p-0 text-right font-bold text-zinc-900 dark:text-white relative">
+                                                <input type="number" value="${item.value}" onchange="window.actions.updatePortfolioOther(${index}, this.value)"
+                                                    class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-blue outline-none" />
+                                            </td>
+                                        </tr>`).join('')}
+                                        <tr class="bg-blue-50 dark:bg-blue-900/20 font-bold">
+                                            <td class="p-3 text-blue-800 dark:text-blue-300">TOTAL OTRO</td>
+                                            <td class="p-3 text-right text-blue-800 dark:text-blue-300">${formatCurrency(totalOtros)}</td>
+                                        </tr>
+                                        <tr class="bg-white dark:bg-zinc-900">
+                                            <td class="p-3 font-bold text-zinc-900 dark:text-white">DINERO ADICIONAL LIQUIDO</td>
+                                            <td class="p-3 text-right font-bold text-zinc-900 dark:text-white">$0.00</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Right Column: Gastos Futuros -->
+                        <div class="space-y-6">
+                            <!-- 2026 -->
+                            <div class="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                <div class="bg-black text-white p-3 font-bold text-center uppercase text-sm tracking-wider">Gastos Futuros</div>
+                                <div class="bg-brand-blue p-2 text-white font-bold text-center text-xs">2026</div>
+                                <table class="w-full text-sm">
+                                    <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
+                                        ${expenses2026.map((item, index) => `
+                                        <tr>
+                                            <td class="p-3 text-zinc-600 dark:text-zinc-400">${item.label}</td>
+                                            <td class="p-0 text-right font-medium text-zinc-900 dark:text-white relative">
+                                                <input type="number" value="${item.value}" onchange="window.actions.updatePortfolioExpense('expenses2026', ${index}, this.value)"
+                                                    class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-blue outline-none" />
+                                            </td>
+                                        </tr>`).join('')}
+                                        <tr class="bg-zinc-50 dark:bg-zinc-800/50 font-bold border-t border-zinc-200 dark:border-zinc-700">
+                                            <td class="p-3">TOTAL</td>
+                                            <td class="p-3 text-right">${formatCurrency(total2026)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <!-- 2027 -->
+                            <div class="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+                                <div class="bg-brand-blue p-2 text-white font-bold text-center text-xs">2027</div>
+                                <table class="w-full text-sm">
+                                    <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800">
+                                        ${expenses2027.map((item, index) => `
+                                        <tr>
+                                            <td class="p-3 text-zinc-600 dark:text-zinc-400">${item.label}</td>
+                                            <td class="p-0 text-right font-medium text-zinc-900 dark:text-white relative">
+                                                <input type="number" value="${item.value}" onchange="window.actions.updatePortfolioExpense('expenses2027', ${index}, this.value)"
+                                                    class="w-full h-full p-3 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-blue outline-none" />
+                                            </td>
+                                        </tr>`).join('')}
+                                        <tr class="bg-zinc-50 dark:bg-zinc-800/50 font-bold border-t border-zinc-200 dark:border-zinc-700">
+                                            <td class="p-3">TOTAL</td>
+                                            <td class="p-3 text-right">${formatCurrency(total2027)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <!-- Summary Footer -->
+                            <div class="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/30">
+                                <table class="w-full text-sm font-bold">
+                                    <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
+                                        <tr><td class="p-3 text-zinc-600 dark:text-zinc-400">AHORRO</td><td class="p-3 text-right text-zinc-900 dark:text-white">-</td></tr>
+                                        <tr><td class="p-3 text-zinc-600 dark:text-zinc-400">COMPROMETIDO</td><td class="p-3 text-right text-zinc-900 dark:text-white">${formatCurrency(totalComprometido)}</td></tr>
+                                        <tr>
+                                            <td class="p-3 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white border-t-2 border-zinc-300 dark:border-zinc-600">QUEDAN DISPONIBLES PARA INVERTIR</td>
+                                            <td class="p-3 bg-white dark:bg-zinc-900 text-right text-red-500 border-t-2 border-zinc-300 dark:border-zinc-600 font-black text-lg">${formatCurrency(totalDisponibles)}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PLAN DE AHORRO -->
+                <div class="bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+                    <div class="bg-black text-white p-3 text-center uppercase tracking-wide font-bold">Plan de Ahorro</div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm whitespace-nowrap">
+                            <thead>
+                                <tr class="bg-brand-lime text-black font-bold uppercase text-xs">
+                                    <th class="p-3 text-left w-64 border-r border-black/10">Metas de Ahorro</th>
+                                    <th class="p-3 text-center border-r border-black/10 w-32">1</th>
+                                    <th class="p-3 text-center border-r border-black/10 w-32">2</th>
+                                    <th class="p-3 text-center border-r border-black/10 w-32">3</th>
+                                    <th class="p-3 text-center w-32">4</th>
+                                    <th class="p-3 bg-black text-white w-40">Total Ahorro Mensual</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-zinc-200 dark:divide-zinc-800">
+                                <tr class="bg-brand-lime/30 font-bold">
+                                    <td class="p-3 border-r border-zinc-200 dark:border-zinc-700">CANTIDAD</td>
+                                    ${savingsPlan.goals.map((goal, index) => `
+                                        <td class="p-0 border-r border-zinc-200 dark:border-zinc-700 relative">
+                                            <input type="number" value="${goal.amount}" onchange="window.actions.updatePortfolioGoalAmount(${index}, this.value)"
+                                                class="w-full h-full p-2 text-right bg-transparent border-none focus:ring-2 focus:ring-brand-lime outline-none" />
+                                        </td>`).join('')}
+                                    <td class="p-3 bg-black text-white text-right">${formatCurrency(totalAhorroMensual)}</td>
+                                </tr>
+                                <tr class="bg-brand-lime/10 font-bold text-xs text-zinc-600 dark:text-zinc-400 uppercase">
+                                    <td class="p-3 border-r border-zinc-200 dark:border-zinc-700">MESES</td>
+                                    ${savingsPlan.goals.map((goal, index) => `
+                                        <td class="p-0 text-center border-r border-zinc-200 dark:border-zinc-700 relative">
+                                            <input type="number" value="${goal.months}" onchange="window.actions.updatePortfolioGoalMonths(${index}, this.value)"
+                                                class="w-full h-full p-2 text-center bg-transparent border-none focus:ring-2 focus:ring-brand-lime outline-none" />
+                                        </td>`).join('')}
+                                    <td class="p-3 bg-zinc-900 border-l border-zinc-800"></td>
+                                </tr>
+                                ${renderPlanAhorroRows()}
+                            </tbody>
+                            <tfoot class="bg-black text-white font-bold">
+                                <tr>
+                                    <td class="p-3 uppercase">Total Ahorro</td>
+                                    ${footerTotals.map(total => `<td class="p-3 text-right">${formatCurrency(total)}</td>`).join('')}
+                                    <td class="p-3"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const renderInvestmentView = () => {
+            const realTotal = investment.realDistribution.fixed.amount
+                + investment.realDistribution.alternative.amount
+                + investment.realDistribution.liquid.amount
+                + investment.realDistribution.variable.amount;
+            return `
+            <div class="space-y-8 max-w-full mx-auto animate-fade-in p-4 bg-white dark:bg-zinc-900 dark:text-white min-h-screen">
+
+
+                 
+                 <div class="grid lg:grid-cols-2 gap-8 items-start">
+                    <!-- Left Column: Config & Distribution -->
+                    <div class="space-y-6">
+                        
+                        <!-- Input Fields -->
+                        <div class="space-y-3 mb-6">
+                            <div class="flex items-center justify-between bg-blue-500 text-white p-2 border border-gray-400">
+                                <span class="font-bold text-sm ml-8">MONTO DE INVERSIÓN</span>
+                                <div class="bg-white text-black px-2 py-1 w-64 flex items-center border border-gray-400">
+                                    <span>$</span>
+                                    <input type="number" value="${investment.amount}" onchange="window.actions.updateInvestmentAmount(this.value)"
+                                        class="w-full outline-none text-right font-bold border-none h-full bg-transparent" />
+                                </div>
+                            </div>
+                            <div class="flex items-center justify-between bg-blue-500 text-white p-2 border border-blue-600">
+                                <span class="font-bold text-sm ml-8">TIPO DE PORTAFOLIO</span>
+                                <div class="bg-white px-2 py-1 w-64 text-right border border-gray-400">
+                                    <select onchange="window.actions.updateInvestmentType(this.value)" class="w-full outline-none font-bold text-black text-center bg-transparent border-none h-full">
+                                        <option value="ARRIESGADO" ${investment.type === 'ARRIESGADO' ? 'selected' : ''}>ARRIESGADO</option>
+                                        <option value="MODERADO" ${investment.type === 'MODERADO' ? 'selected' : ''}>MODERADO</option>
+                                        <option value="CONSERVADOR" ${investment.type === 'CONSERVADOR' ? 'selected' : ''}>CONSERVADOR</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recommended Distribution Table -->
+                        <div class="mb-8">
+                            <div class="bg-brand-lime p-1 font-bold text-center border border-black/20 text-xs text-black">DISTRIBUCIÓN RECOMENDADA</div>
+                            <table class="w-full text-xs font-bold border-collapse">
+                                <tbody>
+                                    <tr class="bg-blue-100">
+                                        <td class="w-24 p-0"><div class="bg-blue-500 text-white p-1 text-xs">RENTA FIJA</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.fixed.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-blue-900 text-lg">${investment.distribution.fixed.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-gray-100">
+                                        <td class="w-24 p-0"><div class="bg-zinc-800 text-white p-1 text-xs">ALTERNATIVO</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.alternative.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-zinc-900 text-lg">${investment.distribution.alternative.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-blue-100">
+                                        <td class="w-24 p-0"><div class="bg-brand-lime text-black p-1 text-xs">LIQUIDO</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.liquid.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-blue-900 text-lg">${investment.distribution.liquid.percent}%</td>
+                                    </tr>
+                                    <tr class="bg-gray-100">
+                                        <td class="w-24 p-0"><div class="bg-yellow-400 text-black p-1 text-xs">RENTA VARIABLE</div></td>
+                                        <td class="p-1 text-center text-blue-900 font-bold text-lg">${formatCurrency(investment.distribution.variable.amount)}</td>
+                                        <td class="p-1 text-center border-b border-gray-200 text-zinc-900 text-lg">${investment.distribution.variable.percent}%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                         <!-- Pie Chart -->
+                         <div class="mt-4 flex justify-center bg-white dark:bg-zinc-900 rounded-xl border border-gray-300 dark:border-zinc-800 p-8 shadow-sm">
+                            <div class="relative w-64 h-64 rounded-full shadow-lg" style="background: conic-gradient(
+                                #3b82f6 0% ${investment.distribution.fixed.percent}%,
+                                #3f3f46 ${investment.distribution.fixed.percent}% ${investment.distribution.fixed.percent + investment.distribution.alternative.percent}%,
+                                #84cc16 ${investment.distribution.fixed.percent + investment.distribution.alternative.percent}% ${investment.distribution.fixed.percent + investment.distribution.alternative.percent + investment.distribution.liquid.percent}%,
+                                #facc15 ${investment.distribution.fixed.percent + investment.distribution.alternative.percent + investment.distribution.liquid.percent}% 100%
+                            )">
+                                 ${(() => {
+                    const p = investment.distribution;
+                    const slices = [
+                        { pct: p.fixed.percent, color: 'text-white' },
+                        { pct: p.alternative.percent, color: 'text-white' },
+                        { pct: p.liquid.percent, color: 'text-black' },
+                        { pct: p.variable.percent, color: 'text-black' }
+                    ];
+                    let acc = 0;
+                    return slices.map(slice => {
+                        if (slice.pct === 0) return '';
+                        const midAngleDeg = (acc + slice.pct / 2) * 3.6;
+                        acc += slice.pct;
+                        const rad = (midAngleDeg - 90) * (Math.PI / 180);
+                        const left = 50 + 35 * Math.cos(rad);
+                        const top = 50 + 35 * Math.sin(rad);
+
+                        return `<span class="absolute font-bold text-xs drop-shadow-md ${slice.color}" 
+                                                      style="left: ${left}%; top: ${top}%; transform: translate(-50%, -50%);">
+                                                      ${slice.pct}%
+                                                 </span>`;
+                    }).join('');
+                })()}
+                            </div>
+                         </div>

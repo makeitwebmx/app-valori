@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es" class="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="app-base-url" content="">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Valori+">
+    <meta name="mobile-web-app-capable" content="yes">
+    <script>
+        (function () {
+            const viewport = document.querySelector('meta[name="viewport"]');
+            if (!viewport) return;
+
+            const ua = navigator.userAgent || '';
+            const isMobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini|Mobile/i.test(ua);
+            const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' &&
+                navigator.maxTouchPoints > 1);
+            const isTouchSmallScreen = (navigator.maxTouchPoints || 0) > 1 && Math.min(screen.width, screen.height) <= 900;
+            const isMobile = isMobileUA || isTouchSmallScreen;
+            if (isIOS) {
+                document.documentElement.classList.add('is-ios');
+            }
+            if (isMobile) {
+                document.documentElement.classList.add('is-mobile');
+            }
+
+            const updateStandaloneState = () => {
+                const mm = window.matchMedia ? window.matchMedia.bind(window) : null;
+                const standalone =
+                    !!window.navigator.standalone ||
+                    (mm && (mm('(display-mode: standalone)').matches ||
+                        mm('(display-mode: fullscreen)').matches ||
+                        mm('(display-mode: minimal-ui)').matches));
+                window.__IS_STANDALONE__ = !!standalone;
+                document.documentElement.classList.toggle('is-standalone', !!standalone);
+            };
+
+            updateStandaloneState();
+            window.addEventListener('pageshow', updateStandaloneState);
+            if (window.matchMedia) {
+                const mmStandalone = window.matchMedia('(display-mode: standalone)');
+                const mmFullscreen = window.matchMedia('(display-mode: fullscreen)');
+                const mmMinimal = window.matchMedia('(display-mode: minimal-ui)');
+                if (mmStandalone.addEventListener) mmStandalone.addEventListener('change', updateStandaloneState);
+                if (mmFullscreen.addEventListener) mmFullscreen.addEventListener('change', updateStandaloneState);
+                if (mmMinimal.addEventListener) mmMinimal.addEventListener('change', updateStandaloneState);
+            }
+
+            // Use native responsive viewport on mobile instead of forcing desktop width
+            viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no');
+            window.__IS_MOBILE_DEVICE__ = !!isMobile;
+            window.__IS_MOBILE_LANDSCAPE__ = false;
+            window.__IS_IOS__ = !!isIOS;
+
+            if (isMobile) {
+                const updateOrientation = () => {
+                    const isLandscape = window.innerWidth > window.innerHeight;
+                    window.__IS_MOBILE_LANDSCAPE__ = isLandscape;
+                    document.documentElement.classList.toggle('is-landscape', isLandscape);
+                    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                        window.dispatchEvent(new CustomEvent('valori:viewportchange', {
+                            detail: { isMobile: true, isLandscape, width: window.innerWidth }
+                        }));
+                    }
+                };
+                updateOrientation();
+                window.addEventListener('resize', updateOrientation);
+                window.addEventListener('orientationchange', () => { setTimeout(updateOrientation, 100); });
+            }
+        })();
+    </script>
+    <title>Valori+ | Sistema Operativo Financiero</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700;900&display=swap"
+        rel="stylesheet">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        'brand-lime': '#cde52d',
+                        'brand-blue': '#0d85fa',
+                        'brand-black': '#17171a',
+                        'brand-grey': '#777777',
+                    },
+                    fontFamily: {
+                        sans: ['Work Sans', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Supabase Client -->
+
+
+    <!-- EmailJS SDK -->
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <!-- PDF.js for PDF parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        // Configure PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+
+    <!-- Intro.js for Onboarding -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/introjs.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/intro.min.js"></script>
+
+    <link rel="stylesheet" href="styles_V2.9.css">
+    <style>
+        #landscape-prompt {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: #17171a;
+            color: white;
+            padding: 2rem;
+            text-align: center;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Orientation CSS removed so JS has full control */
+
+        html.is-ios #fs-btn-prompt,
+        html.is-ios #fs-btn-ios,
+        html.is-ios button[onclick="actions.toggleFullscreen()"] {
+            display: none !important;
+        }
+
+        .ios-only {
+            display: none;
+        }
+
+        html.is-ios .ios-only {
+            display: block;
+        }
+
+        html.is-ios .not-ios {
+            display: none;
+        }
+
+        #loading-screen {
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #ffffff;
+            color: #7a7a7a;
+            opacity: 1;
+            transition: opacity 0.4s ease;
+        }
+
+        #loading-screen::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image:
+                radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.25) 1.2px, transparent 1.6px),
+                radial-gradient(circle at 70% 40%, rgba(163, 230, 53, 0.25) 1.2px, transparent 1.6px),
+                radial-gradient(circle at 35% 75%, rgba(59, 130, 246, 0.2) 1px, transparent 1.4px),
+                radial-gradient(circle at 80% 75%, rgba(163, 230, 53, 0.2) 1px, transparent 1.4px);
+            background-size: 220px 220px, 260px 260px, 200px 200px, 240px 240px;
+            background-repeat: repeat;
+            opacity: 0.65;
+        }
+
+        #loading-screen.is-hiding {
+            opacity: 0;
+        }
+
+        #loading-screen.is-hidden {
+            display: none;
+        }
+
+        .valori-loading-inner {
+            position: relative;
+            z-index: 1;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            letter-spacing: 0.02em;
+        }
+
+        .valori-loading-spinner {
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            border: 2px solid #e5e7eb;
+            border-top-color: #a3e635;
+            border-right-color: #60a5fa;
+            animation: valori-spin 0.9s linear infinite;
+        }
+
+        @keyframes valori-spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body
+    class="bg-gray-50 dark:bg-brand-black text-zinc-900 dark:text-white font-sans selection:bg-brand-lime/30 selection:text-black overflow-x-hidden transition-colors duration-300">
+    <script>
+        window.__LOADER_BOOT_TS__ = Date.now();
+    </script>
+
+    <div id="loading-screen" role="status" aria-live="polite">
+        <div class="valori-loading-inner">
+            <span class="valori-loading-spinner" aria-hidden="true"></span>
+            <span>Cargando...</span>
+        </div>
+    </div>
+
+    <!-- Mobile Portrait Overlay -->
+    <div id="landscape-prompt" class="animate-fade-in">
+        <div class="bg-brand-blue/10 p-6 rounded-3xl border border-brand-blue/30 mb-8 animate-bounce-slow">
+            <i data-lucide="smartphone" class="text-brand-blue w-16 h-16"></i>
+        </div>
+        <h2 class="text-3xl font-black mb-4">Experiencia Móvil</h2>
+        <p class="text-zinc-400 text-lg mb-8 max-w-xs mx-auto">
+            Bienvenido a Valori+. Por favor, inicia la experiencia para continuar.
+        </p>
+        <button onclick="requestFullScreen()" id="fs-btn-prompt"
+            class="bg-brand-blue hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-2 mb-4">
+            <i data-lucide="maximize" width="20"></i> Iniciar Pantalla Completa
+        </button>
+        <button onclick="dismissOrientationPrompt()" id="fs-btn-ios" style="display: none;"
+            class="bg-brand-blue hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center gap-2 mb-4">
+            <i data-lucide="play" width="20"></i> Iniciar Experiencia
+        </button>
+        <!-- Botón de paisaje eliminado ya que permitimos vertical en iOS -->
+    </div>
+
+    <script>
+        let isExperienceStarted = false;
+
+        function dismissOrientationPrompt() {
+            isExperienceStarted = true;
+            const overlay = document.getElementById('landscape-prompt');
+            if (overlay) overlay.style.display = 'none';
+        }
+
+        function confirmLandscape() {
+            checkMobileOrientation();
+        }
+
+        function checkMobileOrientation() {
+            const isMobile = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            const overlay = document.getElementById('landscape-prompt');
+
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' &&
+                navigator.maxTouchPoints > 1);
+            if (isIOS) {
+                document.documentElement.classList.add('is-ios');
+                const btnPrompt = document.getElementById('fs-btn-prompt');
+                const btnIos = document.getElementById('fs-btn-ios');
+                if (btnPrompt) btnPrompt.style.display = 'none';
+                if (btnIos) btnIos.style.display = 'flex';
+            }
+
+            // On mobile, show welcome prompt only on first visit (not fullscreen gating)
+            if (isMobile && !isExperienceStarted) {
+                if (overlay) overlay.style.display = 'flex';
+            } else {
+                if (overlay) overlay.style.display = 'none';
+            }
+        }
+
+        function requestFullScreen() {
+            const doc = window.document;
+            const docEl = doc.documentElement;
+            const requestFullScreen = docEl.requestFullscreen || docEl.mozRequestFullScreen || docEl.webkitRequestFullScreen ||
+                docEl.msRequestFullscreen;
+            if (requestFullScreen) {
+                requestFullScreen.call(docEl).catch(err => {
+                    console.log("Full screen request rejected", err);
+                });
+            }
+            dismissOrientationPrompt(); // Close prompt after attempting fullscreen
+        }
+
+        window.addEventListener('resize', checkMobileOrientation);
+        window.addEventListener('orientationchange', checkMobileOrientation);
+        document.addEventListener('fullscreenchange', checkMobileOrientation);
+        document.addEventListener('webkitfullscreenchange', checkMobileOrientation);
+        document.addEventListener('mozfullscreenchange', checkMobileOrientation);
+        document.addEventListener('MSFullscreenChange', checkMobileOrientation);
+
+        document.addEventListener('DOMContentLoaded', () => {
+            checkMobileOrientation();
+            if (window.lucide) window.lucide.createIcons();
+        });
+    </script>
+
+    <!-- Main App Container -->
+    <div id="app" class="min-h-screen flex flex-col relative animate-fade-in">
+        <!-- Content will be injected here -->
+    </div>
+
+    <!-- Mascot Container -->
+    <div id="mascot-container"
+        class="fixed bottom-4 right-4 z-50 flex flex-col items-end md:bottom-8 md:right-8 animate-fade-in">
+        <!-- Injected with JS -->
+    </div>
+
+    <!-- Particles Canvas -->
+    <canvas id="particle-canvas" class="fixed inset-0 pointer-events-none z-0 opacity-30"></canvas>
+
+    <!-- Main Script - Original system loaded as regular script (not module) -->
+    <script type="module" src="src/main_V2.9.js"></script>
+</body>
+
+</html>
+
